@@ -1,4 +1,7 @@
-class PoolExhaustedException(Exception):
+from resource_pool.exceptions import PoolExhaustedError
+
+
+class PoolExhaustedException(PoolExhaustedError):
     """池中无可用的 User-Agent 时抛出"""
 
     def __init__(self, category: str | None = None):

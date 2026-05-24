@@ -109,8 +109,9 @@ class TestUserAgentPool:
 
     def test_count_specific_category(self):
         pool = UserAgentPool()
-        stats = pool.count("desktop")
-        assert set(stats.keys()) == {"desktop"}
+        count = pool.count("desktop")
+        assert isinstance(count, int)
+        assert count > 0
 
     def test_len(self):
         pool = UserAgentPool()

@@ -16,6 +16,7 @@ from dns_resolver_pool.servers import (
     _OVERSEAS,
     HEALTH_CHECK_DOMAINS,
 )
+from resource_pool.base import ResourcePool, SelectionStrategy as SelectionStrategyProtocol
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +35,7 @@ class ServerState:
         "ip", "name", "region", "enabled", "weight",
         "latency_ms", "fail_count", "success_count",
         "consecutive_fails", "last_used", "last_health",
-        "_resolver",
+        "_resolvers",
     )
 
     def __init__(self, entry: ServerEntry) -> None:
@@ -49,10 +50,11 @@ class ServerState:
         self.consecutive_fails: int = 0
         self.last_used: float = 0.0
         self.last_health: float = 0.0
-        self._resolver: dns.resolver.Resolver | None = None
+        # 每线程独立 Resolver 实例，确保多线程安全
+        self._resolvers: threading.local = threading.local()
 
 
-class DNSResolverPool:
+class DNSResolverPool(ResourcePool):
     """线程安全的 DNS 解析器资源池
 
     使用示例::
@@ -68,17 +70,21 @@ class DNSResolverPool:
         regions: tuple[str, ...] = ("domestic", "overseas"),
         strategy: SelectStrategy = SelectStrategy.LATENCY_WEIGHTED,
         cache_ttl: int = 300,
+        max_cache_size: int = 4096,
         max_consecutive_fails: int = 3,
         revive_after: int = 120,
     ) -> None:
         self._servers: list[ServerState] = []
         self._cache: dict[str, tuple[list[str], float]] = {}
         self._cache_ttl = cache_ttl
+        self._max_cache_size = max_cache_size
+        self._cache_order: list[str] = []  # 插入顺序，用于 LRU 淘汰
         self._max_fails = max_consecutive_fails
         self._revive_after = revive_after
         self._strategy = strategy
         self._lock = threading.Lock()
         self._rr_index = 0
+        self._last_revive_check: float = 0.0
         self._load_defaults(regions)
 
     # ── 公开 API ─────────────────────────────────────────────────────
@@ -208,14 +214,20 @@ class DNSResolverPool:
         """清空 DNS 解析缓存"""
         with self._lock:
             self._cache.clear()
+            self._cache_order.clear()
 
     @property
     def strategy(self) -> SelectStrategy:
         return self._strategy
 
     @strategy.setter
-    def strategy(self, value: SelectStrategy) -> None:
+    def strategy(self, value: SelectStrategy | SelectionStrategyProtocol) -> None:
         self._strategy = value
+
+    def __contains__(self, ip: str) -> bool:
+        """检查 IP 是否在池中"""
+        with self._lock:
+            return any(s.ip == ip for s in self._servers)
 
     # ── 内部 ─────────────────────────────────────────────────────────
 
@@ -234,20 +246,26 @@ class DNSResolverPool:
         if not alive:
             return iter(())
 
-        if self._strategy == SelectStrategy.LATENCY_WEIGHTED:
+        strat = self._strategy
+        # 支持 callable 自定义策略
+        if callable(strat) and not isinstance(strat, SelectStrategy):
+            return strat(alive)
+
+        if strat == SelectStrategy.LATENCY_WEIGHTED:
             return self._latency_weighted_order(alive)
-        elif self._strategy == SelectStrategy.ROUND_ROBIN:
+        elif strat == SelectStrategy.ROUND_ROBIN:
             return self._round_robin_order(alive)
         else:
             return self._random_order(alive)
 
     @staticmethod
     def _do_resolve(state: ServerState, domain: str, record_type: str, timeout: float) -> list[str]:
-        # 复用 Resolver 实例，减少重复创建开销
-        if state._resolver is None:
-            state._resolver = dns.resolver.Resolver()
-            state._resolver.nameservers = [state.ip]
-        resolver = state._resolver
+        # 每线程复用 Resolver 实例（dns.resolver.Resolver 非线程安全）
+        resolver = getattr(state._resolvers, "instance", None)
+        if resolver is None:
+            resolver = dns.resolver.Resolver()
+            resolver.nameservers = [state.ip]
+            state._resolvers.instance = resolver
         resolver.timeout = timeout
         resolver.lifetime = timeout
         start = time.monotonic()
@@ -260,11 +278,17 @@ class DNSResolverPool:
             raise ResourceUnhealthyException(state.ip, str(exc)) from exc
 
     def _probe_server(self, state: ServerState, timeout: float) -> bool:
+        """探测单台 DNS 是否可用（不影响 latency_ms）"""
         domain = random.choice(HEALTH_CHECK_DOMAINS)
+        # 健康检查使用独立 Resolver，避免污染运行时延迟统计
+        resolver = dns.resolver.Resolver()
+        resolver.nameservers = [state.ip]
+        resolver.timeout = timeout
+        resolver.lifetime = timeout
         try:
-            self._do_resolve(state, domain, "A", timeout)
+            resolver.resolve(domain, "A")
             return True
-        except ResourceUnhealthyException:
+        except dns.exception.DNSException:
             return False
 
     def _get_alive(self) -> list[ServerState]:
@@ -273,6 +297,10 @@ class DNSResolverPool:
 
     def _try_revive(self) -> None:
         now = time.time()
+        # 距上次检查 < 30s 则跳过
+        if now - self._last_revive_check < 30:
+            return
+        self._last_revive_check = now
         with self._lock:
             for s in self._servers:
                 if not s.enabled and (now - s.last_health) > self._revive_after:
@@ -293,6 +321,10 @@ class DNSResolverPool:
             state.last_used = time.time()
             if state.consecutive_fails >= self._max_fails:
                 state.enabled = False
+                logger.warning(
+                    "DNS %s (%s) 连续失败 %d 次，已隔离（resolve 触发）",
+                    state.ip, state.name, state.consecutive_fails,
+                )
 
     # ── 选择策略 ─────────────────────────────────────────────────────
 
@@ -325,12 +357,29 @@ class DNSResolverPool:
             ips, expires = entry
             if time.time() > expires:
                 del self._cache[key]
+                # 惰性清理 order（不遍历全列表，仅在 get 时移除）
+                try:
+                    self._cache_order.remove(key)
+                except ValueError:
+                    pass
                 return None
             return ips
 
     def _cache_set(self, key: str, ips: list[str]) -> None:
         with self._lock:
+            # 若 key 已存在（用不同 DNS 得到同一结果），先移除旧位置
+            if key in self._cache:
+                try:
+                    self._cache_order.remove(key)
+                except ValueError:
+                    pass
             self._cache[key] = (ips, time.time() + self._cache_ttl)
+            self._cache_order.append(key)
+            # LRU 淘汰：超过上限则逐出最早条目
+            while len(self._cache_order) > self._max_cache_size:
+                oldest = self._cache_order.pop(0)
+                self._cache.pop(oldest, None)
+                logger.debug("缓存淘汰: %s", oldest)
 
     # ── 魔术方法 ─────────────────────────────────────────────────────
 

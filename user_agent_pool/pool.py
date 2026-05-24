@@ -12,11 +12,12 @@ from user_agent_pool.agents import (
     _HEADER_PROFILES,
     AgentEntry,
 )
+from resource_pool.base import ResourcePool
 
 logger = logging.getLogger(__name__)
 
 
-class UserAgentPool:
+class UserAgentPool(ResourcePool):
     """线程安全的 User-Agent 资源池
 
     支持：
@@ -150,10 +151,39 @@ class UserAgentPool:
             logger.debug("已移除 %d 条 UA", removed)
         return removed
 
-    def count(self, category: str | None = None) -> dict[str, int]:
-        """统计各分类 UA 数量"""
-        cats = [category] if category else list(self._agents.keys())
-        return {c: len(self._agents.get(c, [])) for c in cats}
+    def count(self, category: str | None = None) -> dict[str, int] | int:
+        """统计各分类 UA 数量
+
+        Args:
+            category: 指定分类则返回 int，不指定则返回 dict
+        """
+        if category:
+            return len(self._agents.get(category, []))
+        return {c: len(v) for c, v in self._agents.items()}
+
+    def register_profile(self, key: str, headers: dict[str, str]) -> None:
+        """注册自定义 Header Profile
+
+        注册后可在 add() 时通过 profile=key 引用，
+        也可在 agents._HEADER_PROFILES 中直接添加。
+
+        Raises:
+            ValueError: key 已存在
+        """
+        if key in _HEADER_PROFILES:
+            raise ValueError(f"Profile '{key}' 已存在")
+        if "User-Agent" in headers:
+            raise ValueError("Profile 不应包含 'User-Agent'，该字段由池自动填充")
+        _HEADER_PROFILES[key] = dict(headers)
+        logger.info("已注册 Header Profile: %s (%d 字段)", key, len(headers))
+
+    def __contains__(self, ua: str) -> bool:
+        """检查 UA 字符串是否在池中"""
+        with self._lock:
+            for entries in self._agents.values():
+                if any(e["ua"] == ua for e in entries):
+                    return True
+        return False
 
     def reserve(self, category: str = "all", weighted: bool = True) -> "UAReserve":
         """上下文管理器 —— 取出一个 UA（从池中移除），退出时自动归还
@@ -223,9 +253,14 @@ class UserAgentPool:
         return sum(len(v) for v in self._agents.values())
 
     def __iter__(self) -> Iterator[str]:
-        """迭代所有类别的所有 UA"""
-        for entries in self._agents.values():
-            yield from (e["ua"] for e in entries)
+        """迭代所有类别的所有 UA（线程安全快照）"""
+        with self._lock:
+            snapshot = [
+                e["ua"]
+                for entries in self._agents.values()
+                for e in entries
+            ]
+        yield from snapshot
 
 
 class UAReserve:
@@ -251,4 +286,7 @@ class UAReserve:
             try:
                 self._pool.add(self.ua, self._category)
             except (ValueError, InvalidAgentException):
-                pass
+                logger.warning(
+                    "UAReserve 归还失败: UA=%s, category=%s",
+                    self.ua[:80], self._category,
+                )

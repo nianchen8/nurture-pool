@@ -238,3 +238,5 @@ DEFAULT_AGENTS: dict[str, list[AgentEntry]] = {
 }
 
 VALID_CATEGORIES = ("desktop", "mobile", "tablet", "all")
+
+AVAILABLE_PROFILES: tuple[str, ...] = tuple(_HEADER_PROFILES.keys())
