@@ -18,26 +18,34 @@
 ## 安装
 
 ```bash
-# 基础安装（UA 池 + DNS 池）
-pip install -e /path/to/resource_pool
+# 方式一：pip 直接安装（推荐日常使用）
+pip install git+https://github.com/nianchen8/resource-pool.git
 
-# 含框架适配器
-pip install -e /path/to/resource_pool[aiohttp,httpx]
+# 方式二：克隆后安装
+pip install git+https://github.com/nianchen8/resource-pool.git@v0.3.0  # 固定版本
+git clone https://github.com/nianchen8/resource-pool.git
+pip install ./resource-pool
 
-# 开发环境（含测试）
-pip install -e /path/to/resource_pool[dev]
+# 含可选依赖
+git clone https://github.com/nianchen8/resource-pool.git
+pip install ./resource-pool[aiohttp,httpx]     # 含框架适配器
+pip install ./resource-pool[dev]               # 开发环境（含 pytest）
 ```
 
-Python ≥ 3.10，依赖 `dnspython ≥ 2.6`。
+Python ≥ 3.10，仅依赖 `dnspython ≥ 2.6`。
 
 ---
 
 ## 快速上手
 
+> **统一入口**：`from resource_pool import UserAgentPool, DNSResolverPool, SelectStrategy`
+>
+> 也支持直接导入子包：`from user_agent_pool import UserAgentPool`
+
 ### User-Agent 资源池
 
 ```python
-from user_agent_pool import UserAgentPool
+from resource_pool import UserAgentPool
 
 pool = UserAgentPool()
 
@@ -67,7 +75,7 @@ pool.remove("MyCrawlerBot/2.0")
 ### DNS 解析器资源池
 
 ```python
-from dns_resolver_pool import DNSResolverPool, SelectStrategy
+from resource_pool import DNSResolverPool, SelectStrategy
 
 pool = DNSResolverPool(strategy=SelectStrategy.LATENCY_WEIGHTED)
 pool.health_check(timeout=3.0)
@@ -81,6 +89,33 @@ ips = pool.resolve_all("www.baidu.com")
 # 查看各 DNS 服务器运行时状态
 for s in pool.stats():
     print(f"{s['name']:12s} 延迟={s['latency_ms']:5.1f}ms  可用={s['enabled']}")
+```
+
+---
+
+## 实战示例：爬虫请求
+
+```python
+import requests
+from resource_pool import UserAgentPool, DNSResolverPool, SelectStrategy
+
+# 初始化资源池
+ua_pool = UserAgentPool()
+dns_pool = DNSResolverPool(strategy=SelectStrategy.LATENCY_WEIGHTED)
+dns_pool.health_check()
+
+# 获取完整 Header Profile
+headers = ua_pool.get_headers("desktop")
+
+# 解析域名
+ip = dns_pool.resolve("www.example.com")
+
+# 发起请求
+resp = requests.get(f"http://{ip}/api/data", headers=headers, timeout=10)
+
+# 查看运行时状态
+print(dns_pool.stats())
+print(ua_pool.count())
 ```
 
 ---
