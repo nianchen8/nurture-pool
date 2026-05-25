@@ -141,9 +141,8 @@ class ResourcePool(ABC):
     _lock: threading.Lock | DummyLock
 
     def __init_subclass__(cls, **kwargs: object) -> None:
-        """校验子类是否正确初始化 _lock 属性"""
+        """子类注册钩子 —— 框架可在此校验子类契约"""
         super().__init_subclass__(**kwargs)
-        # 延迟校验：在子类 __init__ 后通过 _ensure_lock 完成
 
     @abstractmethod
     def __len__(self) -> int:

@@ -252,8 +252,7 @@ class TestAsyncProxyPool:
 
     def _make_pool(self):
         pool = AsyncProxyPool()
-        pool.add_proxy({"host": "127.0.0.1", "port": 8080})
-        pool.add_proxy({"host": "127.0.0.1", "port": 8081, "scheme": "https"})
+        # 注意：add_proxy 改为 async 后，_make_pool 返回的 pool 需要在 async 上下文中 await
         return pool
 
     @async_test
@@ -263,18 +262,24 @@ class TestAsyncProxyPool:
 
     @async_test
     async def test_add_proxy(self):
-        pool = self._make_pool()
+        pool = AsyncProxyPool()
+        await pool.add_proxy({"host": "127.0.0.1", "port": 8080})
+        await pool.add_proxy({"host": "127.0.0.1", "port": 8081, "scheme": "https"})
         assert len(pool) == 2
 
     @async_test
     async def test_get(self):
-        pool = self._make_pool()
+        pool = AsyncProxyPool()
+        await pool.add_proxy({"host": "127.0.0.1", "port": 8080})
+        await pool.add_proxy({"host": "127.0.0.1", "port": 8081, "scheme": "https"})
         proxy = await pool.get()
         assert proxy.startswith("http://") or proxy.startswith("https://")
 
     @async_test
     async def test_get_dict(self):
-        pool = self._make_pool()
+        pool = AsyncProxyPool()
+        await pool.add_proxy({"host": "127.0.0.1", "port": 8080})
+        await pool.add_proxy({"host": "127.0.0.1", "port": 8081, "scheme": "https"})
         proxies = await pool.get_dict()
         assert "http" in proxies
         assert "https" in proxies
@@ -287,39 +292,49 @@ class TestAsyncProxyPool:
 
     @async_test
     async def test_remove_proxy(self):
-        pool = self._make_pool()
-        ok = pool.remove_proxy("127.0.0.1", 8080)
+        pool = AsyncProxyPool()
+        await pool.add_proxy({"host": "127.0.0.1", "port": 8080})
+        await pool.add_proxy({"host": "127.0.0.1", "port": 8081, "scheme": "https"})
+        ok = await pool.remove_proxy("127.0.0.1", 8080)
         assert ok is True
         assert len(pool) == 1
 
     @async_test
     async def test_enable_proxy(self):
-        pool = self._make_pool()
-        pool.remove_proxy("127.0.0.1", 8080)
-        ok = pool.enable_proxy("127.0.0.1", 8080)
+        pool = AsyncProxyPool()
+        await pool.add_proxy({"host": "127.0.0.1", "port": 8080})
+        await pool.add_proxy({"host": "127.0.0.1", "port": 8081, "scheme": "https"})
+        await pool.remove_proxy("127.0.0.1", 8080)
+        ok = await pool.enable_proxy("127.0.0.1", 8080)
         assert ok is True
 
     @async_test
     async def test_mark_failed(self):
-        pool = self._make_pool()
-        ok = pool.mark_failed("127.0.0.1", 8080)
+        pool = AsyncProxyPool()
+        await pool.add_proxy({"host": "127.0.0.1", "port": 8080})
+        await pool.add_proxy({"host": "127.0.0.1", "port": 8081, "scheme": "https"})
+        ok = await pool.mark_failed("127.0.0.1", 8080)
         assert ok is True
 
     @async_test
     async def test_mark_failed_nonexistent(self):
         pool = AsyncProxyPool()
-        ok = pool.mark_failed("10.0.0.1", 9999)
+        ok = await pool.mark_failed("10.0.0.1", 9999)
         assert ok is False
 
     @async_test
     async def test_stats(self):
-        pool = self._make_pool()
+        pool = AsyncProxyPool()
+        await pool.add_proxy({"host": "127.0.0.1", "port": 8080})
+        await pool.add_proxy({"host": "127.0.0.1", "port": 8081, "scheme": "https"})
         stats = await pool.stats()
         assert len(stats) == 2
 
     @async_test
     async def test_contains(self):
-        pool = self._make_pool()
+        pool = AsyncProxyPool()
+        await pool.add_proxy({"host": "127.0.0.1", "port": 8080})
+        await pool.add_proxy({"host": "127.0.0.1", "port": 8081, "scheme": "https"})
         assert "http://127.0.0.1:8080" in pool
         assert "http://10.0.0.1:9999" not in pool
 
@@ -327,24 +342,28 @@ class TestAsyncProxyPool:
     async def test_invalid_scheme_raises(self):
         pool = AsyncProxyPool()
         with pytest.raises(ValueError, match="无效 scheme"):
-            pool.add_proxy({"scheme": "ftp", "host": "127.0.0.1", "port": 21})
+            await pool.add_proxy({"scheme": "ftp", "host": "127.0.0.1", "port": 21})
 
     @async_test
     async def test_missing_host_raises(self):
         pool = AsyncProxyPool()
         with pytest.raises(ValueError, match="必须包含 host 和 port"):
-            pool.add_proxy({"port": 8080})
+            await pool.add_proxy({"port": 8080})
 
     @async_test
     async def test_health_check(self):
-        pool = self._make_pool()
+        pool = AsyncProxyPool()
+        await pool.add_proxy({"host": "127.0.0.1", "port": 8080})
+        await pool.add_proxy({"host": "127.0.0.1", "port": 8081, "scheme": "https"})
         results = await pool.health_check(timeout=2.0)
         assert isinstance(results, dict)
         assert len(results) == 2
 
     @async_test
     async def test_repr(self):
-        pool = self._make_pool()
+        pool = AsyncProxyPool()
+        await pool.add_proxy({"host": "127.0.0.1", "port": 8080})
+        await pool.add_proxy({"host": "127.0.0.1", "port": 8081, "scheme": "https"})
         r = repr(pool)
         assert "AsyncProxyPool" in r
 
@@ -364,7 +383,7 @@ class TestAsyncPoolOrchestrator:
     async def test_init_with_pools(self):
         ua = AsyncUserAgentPool()
         pool = AsyncProxyPool()
-        pool.add_proxy({"host": "127.0.0.1", "port": 8080})
+        await pool.add_proxy({"host": "127.0.0.1", "port": 8080})
         orch = AsyncPoolOrchestrator(ua=ua, proxy=pool)
         assert "ua" in orch.pool_names
         assert "proxy" in orch.pool_names
@@ -379,7 +398,7 @@ class TestAsyncPoolOrchestrator:
         assert "ua" not in orch.pool_names
 
         pool = AsyncProxyPool()
-        pool.add_proxy({"host": "127.0.0.1", "port": 8080})
+        await pool.add_proxy({"host": "127.0.0.1", "port": 8080})
         await orch.register("proxy", pool)
         assert "proxy" in orch.pool_names
 
@@ -406,7 +425,7 @@ class TestAsyncPoolOrchestrator:
     async def test_next_ua_proxy(self):
         ua = AsyncUserAgentPool()
         proxy = AsyncProxyPool()
-        proxy.add_proxy({"host": "127.0.0.1", "port": 8080})
+        await proxy.add_proxy({"host": "127.0.0.1", "port": 8080})
         orch = AsyncPoolOrchestrator(ua=ua, proxy=proxy)
         combo = await orch.next()
         assert "ua" in combo

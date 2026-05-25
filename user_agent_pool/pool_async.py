@@ -15,6 +15,8 @@ from user_agent_pool.agents import (
     _HEADER_PROFILES,
     _PROFILE_LOCK,
     AgentEntry,
+    parse_ua_metadata,
+    match_profile,
 )
 from user_agent_pool.exceptions import PoolExhaustedException, InvalidAgentException
 from resource_pool.base_async import AsyncDummyLock, AsyncResourcePool
@@ -57,18 +59,41 @@ class AsyncUserAgentPool(AsyncResourcePool):
 
     # ── 公开 API ─────────────────────────────────────────────────────
 
-    async def get(self, category: str = "all", exclude: set[str] | None = None) -> str:
-        """获取一个 User-Agent 字符串（加权随机）"""
-        candidates = self._pick_candidates(category, exclude)
+    async def get(self, category: str = "all",
+                  exclude: set[str] | None = None,
+                  browser: str | None = None,
+                  os: str | None = None,
+                  min_version: int | None = None) -> str:
+        """获取一个 User-Agent 字符串（加权随机）
+
+        Args:
+            category: desktop | mobile | tablet | all
+            exclude: 排除包含这些关键词的 UA
+            browser: 限定浏览器（chrome / firefox / safari / edge）
+            os: 限定操作系统（windows / macos / linux / android / ios）
+            min_version: 最低主版本号（如 120 表示 Chrome 120+）
+        """
+        candidates = self._pick_candidates(category, exclude, browser, os, min_version)
         if not candidates:
             logger.error("UA 池分类 '%s' 已耗尽", category)
             raise PoolExhaustedException(resource_type=category)
         return self._weighted_choice(candidates)
 
     async def get_headers(self, category: str = "all",
-                          exclude: set[str] | None = None) -> dict[str, str]:
-        """获取完整的请求头 Profile"""
-        candidates = self._pick_candidates(category, exclude)
+                          exclude: set[str] | None = None,
+                          browser: str | None = None,
+                          os: str | None = None,
+                          min_version: int | None = None) -> dict[str, str]:
+        """获取完整的请求头 Profile
+
+        Args:
+            category: desktop | mobile | tablet | all
+            exclude: 排除包含这些关键词的 UA
+            browser: 限定浏览器（chrome / firefox / safari / edge）
+            os: 限定操作系统（windows / macos / linux / android / ios）
+            min_version: 最低主版本号（如 120）
+        """
+        candidates = self._pick_candidates(category, exclude, browser, os, min_version)
         if not candidates:
             logger.error("UA 池分类 '%s' 已耗尽（get_headers）", category)
             raise PoolExhaustedException(resource_type=category)
@@ -78,18 +103,31 @@ class AsyncUserAgentPool(AsyncResourcePool):
 
     async def add(self, ua: str, category: str, weight: int = 5,
                   profile: str | None = None) -> None:
-        """向指定分类添加一个 UA"""
+        """向指定分类添加一个 UA
+
+        Args:
+            ua: User-Agent 字符串
+            category: desktop | mobile | tablet
+            weight: 权重（≥1）
+            profile: Header Profile 键名（可选）
+        """
         if category not in VALID_CATEGORIES or category == "all":
             raise ValueError(f"无效分类 '{category}'，可选: {VALID_CATEGORIES}")
         if not ua or not ua.strip():
             raise InvalidAgentException("UA 不能为空")
 
-        entry: AgentEntry = {"ua": ua.strip(), "weight": max(1, weight)}
+        ua_clean = ua.strip()
+        entry: AgentEntry = {"ua": ua_clean, "weight": max(1, weight)}
         if profile:
             entry["profile"] = profile
+        # 自动检测浏览器/操作系统/版本号（用于细粒度筛选）
+        metadata = parse_ua_metadata(ua_clean)
+        for key in ("browser", "os", "version"):
+            if key in metadata:
+                entry[key] = metadata[key]  # type: ignore[literal-required]
         async with self._lock:
             self._agents.setdefault(category, []).append(entry)
-        logger.debug("UA 已添加: %s → 分类 '%s'", ua[:50], category)
+        logger.debug("UA 已添加: %s → 分类 '%s'", ua_clean[:50], category)
 
     async def remove(self, ua: str, category: str | None = None) -> int:
         """移除匹配的 UA，返回移除数量"""
@@ -170,7 +208,10 @@ class AsyncUserAgentPool(AsyncResourcePool):
         return "", False
 
     def _pick_candidates(self, category: str,
-                         exclude: set[str] | None = None) -> list[AgentEntry]:
+                         exclude: set[str] | None = None,
+                         browser: str | None = None,
+                         os: str | None = None,
+                         min_version: int | None = None) -> list[AgentEntry]:
         candidates: list[AgentEntry] = []
         if category == "all":
             for entries in self._agents.values():
@@ -181,6 +222,22 @@ class AsyncUserAgentPool(AsyncResourcePool):
             candidates = [
                 e for e in candidates
                 if not any(kw.lower() in e["ua"].lower() for kw in exclude)
+            ]
+        # 细粒度筛选：按浏览器/操作系统/版本号过滤
+        if browser:
+            candidates = [
+                e for e in candidates
+                if e.get("browser", "").lower() == browser.lower()
+            ]
+        if os:
+            candidates = [
+                e for e in candidates
+                if e.get("os", "").lower() == os.lower()
+            ]
+        if min_version is not None:
+            candidates = [
+                e for e in candidates
+                if e.get("version", 0) >= min_version
             ]
         return candidates
 
@@ -203,14 +260,42 @@ class AsyncUserAgentPool(AsyncResourcePool):
 
     @staticmethod
     def _build_headers(entry: AgentEntry) -> dict[str, str]:
+        """从 entry 构建完整请求头字典
+
+        优先级：
+        1. entry 显式指定 profile → 直接使用
+        2. entry 无 profile 但有 browser/os/version → 自动匹配最佳 Profile
+        3. 均无 → 仅返回 User-Agent
+        """
         headers: dict[str, str] = {"User-Agent": entry["ua"]}
         profile_key = entry.get("profile", "")
+
+        # 自动匹配：无显式 profile 但有元数据时，自动查找最佳匹配
+        if not profile_key:
+            browser = entry.get("browser", "")
+            os_name = entry.get("os", "")
+            version = entry.get("version", 0)
+            if browser and os_name and version:
+                matched = match_profile(
+                    browser=str(browser),
+                    os=str(os_name),
+                    version=int(version),
+                    ua=entry["ua"],
+                )
+                if matched:
+                    profile_key = matched
+                    logger.debug(
+                        "自动匹配 Profile: %s → %s (browser=%s, os=%s, v=%s)",
+                        entry["ua"][:50], matched, browser, os_name, version,
+                    )
+
         if profile_key:
             with _PROFILE_LOCK:
-                if profile_key in _HEADER_PROFILES:
-                    headers.update(_HEADER_PROFILES[profile_key])
-                else:
-                    logger.warning("Profile '%s' 不存在，仅返回 User-Agent", profile_key)
+                profile_data = _HEADER_PROFILES.get(profile_key)
+            if profile_data is not None:
+                headers.update(profile_data)
+            else:
+                logger.warning("Profile '%s' 不存在，仅返回 User-Agent", profile_key)
         return headers
 
 

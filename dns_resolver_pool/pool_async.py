@@ -24,6 +24,7 @@ from dns_resolver_pool.servers import (
     _OVERSEAS,
     HEALTH_CHECK_DOMAINS,
 )
+from resource_pool.base import StrategyProtocol
 from resource_pool.base_async import AsyncDummyLock, AsyncResourcePool
 from resource_pool.orchestrator_async import AsyncPoolOrchestrator
 
@@ -94,7 +95,7 @@ class AsyncDNSResolverPool(AsyncResourcePool):
     def __init__(
         self,
         regions: tuple[str, ...] = ("domestic", "overseas"),
-        strategy: SelectStrategy = SelectStrategy.LATENCY_WEIGHTED,
+        strategy: SelectStrategy | StrategyProtocol = SelectStrategy.LATENCY_WEIGHTED,
         cache_ttl: int = 300,
         max_cache_size: int = 4096,
         max_consecutive_fails: int = 3,
@@ -108,7 +109,9 @@ class AsyncDNSResolverPool(AsyncResourcePool):
         self._cache_order: deque[str] = deque()
         self._max_fails = max_consecutive_fails
         self._revive_after = revive_after
-        self._strategy = strategy
+        self._strategy_enum: SelectStrategy | None = None
+        self._strategy_fn: StrategyProtocol | None = None
+        self._set_strategy(strategy)
         self._lock = asyncio.Lock() if thread_safe else AsyncDummyLock()
         # 缓存分片锁：按域名首字符哈希到 16 个独立锁，减少缓存读写争用
         self._cache_locks: list[asyncio.Lock | AsyncDummyLock] = [
@@ -285,10 +288,26 @@ class AsyncDNSResolverPool(AsyncResourcePool):
 
     # ── 魔术方法 ─────────────────────────────────────────────────────
 
+    @property
+    def strategy(self) -> SelectStrategy | StrategyProtocol:
+        """当前选择策略"""
+        if self._strategy_enum is not None:
+            return self._strategy_enum
+        assert self._strategy_fn is not None, "策略未初始化"
+        return self._strategy_fn
+
+    @strategy.setter
+    def strategy(self, value: SelectStrategy | StrategyProtocol) -> None:
+        """运行时切换策略"""
+        self._set_strategy(value)
+
     def __repr__(self) -> str:
         alive = len(self._get_alive())
         total = len(self._servers)
-        strategy_name = self._strategy.value if isinstance(self._strategy, SelectStrategy) else type(self._strategy).__name__
+        if self._strategy_enum is not None:
+            strategy_name = self._strategy_enum.value
+        else:
+            strategy_name = type(self._strategy_fn).__name__
         return f"AsyncDNSResolverPool(alive={alive}/{total}, strategy={strategy_name})"
 
     def __len__(self) -> int:
@@ -307,22 +326,32 @@ class AsyncDNSResolverPool(AsyncResourcePool):
                     self._servers.append(AsyncServerState(entry))
         logger.info("已加载 %d 台 DNS 服务器（地域: %s）", len(self._servers), ", ".join(regions))
 
+    def _set_strategy(self, value: SelectStrategy | StrategyProtocol) -> None:
+        """设置策略（内部）"""
+        if isinstance(value, SelectStrategy):
+            self._strategy_enum = value
+            self._strategy_fn = None
+        else:
+            self._strategy_enum = None
+            self._strategy_fn = value
+
     def _select_sequence(self):
         alive = self._get_alive()
         self._try_revive()
         if not alive:
             return iter(())
 
-        if isinstance(self._strategy, SelectStrategy):
-            if self._strategy is SelectStrategy.LATENCY_WEIGHTED:
+        # 枚举策略与 callable 策略分别存储在不同字段，避免类型混淆
+        if self._strategy_enum is not None:
+            if self._strategy_enum is SelectStrategy.LATENCY_WEIGHTED:
                 return self._latency_weighted_order(alive)
-            if self._strategy is SelectStrategy.ROUND_ROBIN:
+            if self._strategy_enum is SelectStrategy.ROUND_ROBIN:
                 return self._round_robin_order(alive)
-            if self._strategy is SelectStrategy.RANDOM:
+            if self._strategy_enum is SelectStrategy.RANDOM:
                 return self._random_order(alive)
             return iter(())
-        if callable(self._strategy):
-            return self._strategy(alive)
+        if self._strategy_fn is not None:
+            return self._strategy_fn(alive)
         return iter(())
 
     @staticmethod

@@ -317,7 +317,7 @@ class ProxyPool(ResourcePool):
                 if entries:
                     return entries
             except json.JSONDecodeError:
-                pass
+                logger.debug("JSON 解析失败，回退到纯文本解析（响应前 100 字符: %s）", body[:100])
 
         # ── 纯文本 ──
         return ProxyPool._parse_text(body, default_scheme)

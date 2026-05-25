@@ -116,23 +116,25 @@ class AsyncProxyPool(AsyncResourcePool):
 
     async def get(self, scheme: str | None = None) -> str:
         """获取一个代理 URL"""
-        state = self._pick_one(scheme)
-        if state is None:
-            raise PoolExhaustedException(detail="无可用代理")
-        self._on_success(state)
-        return state.url
+        async with self._lock:
+            state = self._pick_one(scheme)
+            if state is None:
+                raise PoolExhaustedException(detail="无可用代理")
+            self._on_success(state)
+            return state.url
 
     async def get_dict(self, scheme: str | None = None) -> dict[str, str]:
         """获取 requests 库兼容的代理字典"""
-        state = self._pick_one(scheme)
-        if state is None:
-            raise PoolExhaustedException(detail="无可用代理")
-        url = state.url
-        self._on_success(state)
-        return {"http": url, "https": url}
+        async with self._lock:
+            state = self._pick_one(scheme)
+            if state is None:
+                raise PoolExhaustedException(detail="无可用代理")
+            url = state.url
+            self._on_success(state)
+            return {"http": url, "https": url}
 
-    def add_proxy(self, entry: ProxyEntry) -> None:
-        """添加代理（同步操作，纯内存）"""
+    async def add_proxy(self, entry: ProxyEntry) -> None:
+        """添加代理（协程安全）"""
         scheme = entry.get("scheme", "http")
         if scheme not in VALID_SCHEMES:
             raise ValueError(f"无效 scheme '{scheme}'，可选: {VALID_SCHEMES}")
@@ -140,103 +142,117 @@ class AsyncProxyPool(AsyncResourcePool):
             raise ValueError("ProxyEntry 必须包含 host 和 port")
 
         state = AsyncProxyState(entry)
-        existing = [s for s in self._proxies if s.key == state.key]
-        if existing:
-            existing[0].enabled = True
-            existing[0].weight = state.weight
-            existing[0].username = state.username
-            existing[0].password = state.password
-            logger.debug("已更新代理: %s", state.key)
-            return
-        self._proxies.append(state)
+        async with self._lock:
+            existing = [s for s in self._proxies if s.key == state.key]
+            if existing:
+                existing[0].enabled = True
+                existing[0].weight = state.weight
+                existing[0].username = state.username
+                existing[0].password = state.password
+                logger.debug("已更新代理: %s", state.key)
+                return
+            self._proxies.append(state)
         logger.info("已添加代理: %s", state.key)
 
-    def remove_proxy(self, host: str, port: int, scheme: str = "http") -> bool:
-        """移除（禁用）代理"""
-        for s in self._proxies:
-            if s.host == host and s.port == port and s.scheme == scheme:
-                s.enabled = False
-                return True
+    async def remove_proxy(self, host: str, port: int, scheme: str = "http") -> bool:
+        """移除（禁用）代理（协程安全）"""
+        async with self._lock:
+            for s in self._proxies:
+                if s.host == host and s.port == port and s.scheme == scheme:
+                    s.enabled = False
+                    return True
         return False
 
-    def enable_proxy(self, host: str, port: int, scheme: str = "http") -> bool:
-        """重新启用代理"""
-        for s in self._proxies:
-            if s.host == host and s.port == port and s.scheme == scheme:
-                s.enabled = True
-                s.consecutive_fails = 0
-                return True
+    async def enable_proxy(self, host: str, port: int, scheme: str = "http") -> bool:
+        """重新启用代理（协程安全）"""
+        async with self._lock:
+            for s in self._proxies:
+                if s.host == host and s.port == port and s.scheme == scheme:
+                    s.enabled = True
+                    s.consecutive_fails = 0
+                    return True
         return False
 
     async def health_check(self, timeout: float = 5.0) -> dict[str, str]:
         """全量异步健康检查"""
         results: dict[str, str] = {}
-        snapshot = list(self._proxies)
+        async with self._lock:
+            snapshot = list(self._proxies)
         for state in snapshot:
             ok = await self._probe_proxy(state, timeout)
-            if state not in self._proxies:
-                continue
-            if ok:
-                if state.enabled:
-                    state.consecutive_fails = 0
-                    results[state.key] = "OK"
+            async with self._lock:
+                # 重新校验 state 仍在池中且未被其他协程修改
+                if state not in self._proxies:
+                    continue
+                if ok:
+                    # 仅在仍启用时才更新（避免覆盖并发隔离操作）
+                    if state.enabled:
+                        state.consecutive_fails = 0
+                        results[state.key] = "OK"
+                    else:
+                        # 已被隔离但探测通过，保留隔离状态等待 _try_revive
+                        results[state.key] = "OK(隔离中)"
                 else:
-                    results[state.key] = "OK(隔离中)"
-            else:
-                state.consecutive_fails += 1
-                if state.consecutive_fails >= self._max_fails:
-                    state.enabled = False
-                    logger.warning(
-                        "代理 %s 连续失败 %d 次，已隔离",
-                        state.key, state.consecutive_fails,
-                    )
-                results[state.key] = "FAIL"
-            state.last_health = time.time()
+                    state.consecutive_fails += 1
+                    if state.consecutive_fails >= self._max_fails:
+                        state.enabled = False
+                        logger.warning(
+                            "代理 %s 连续失败 %d 次，已隔离",
+                            state.key, state.consecutive_fails,
+                        )
+                    results[state.key] = "FAIL"
+                state.last_health = time.time()
         ok_count = sum(1 for v in results.values() if v == "OK")
         logger.info("代理健康检查完成: %d/%d 可用", ok_count, len(results))
         return results
 
     async def stats(self) -> list[dict]:
         """返回所有代理运行时状态"""
-        return [
-            {
-                "proxy": s.masked_url,
-                "region": s.region,
-                "enabled": s.enabled,
-                "latency_ms": round(s.latency_ms, 1),
-                "success": s.success_count,
-                "fail": s.fail_count,
-                "last_used": s.last_used,
-            }
-            for s in self._proxies
-        ]
+        async with self._lock:
+            return [
+                {
+                    "proxy": s.masked_url,
+                    "region": s.region,
+                    "enabled": s.enabled,
+                    "latency_ms": round(s.latency_ms, 1),
+                    "success": s.success_count,
+                    "fail": s.fail_count,
+                    "last_used": s.last_used,
+                }
+                for s in self._proxies
+            ]
 
-    def mark_failed(self, host: str, port: int, scheme: str = "http") -> bool:
-        """手动标记代理失败"""
-        for s in self._proxies:
-            if s.host == host and s.port == port and s.scheme == scheme:
-                s.fail_count += 1
-                s.consecutive_fails += 1
-                s.last_used = time.time()
-                if s.consecutive_fails >= self._max_fails:
-                    s.enabled = False
-                    logger.warning(
-                        "代理 %s 连续失败 %d 次，已隔离",
-                        s.key, s.consecutive_fails,
-                    )
-                return True
+    async def mark_failed(self, host: str, port: int, scheme: str = "http") -> bool:
+        """手动标记代理失败 —— 在请求失败后调用，用于运行时反馈
+
+        返回 True 表示标记成功，False 表示代理不在池中。
+        连续失败达到阈值后会自动隔离。
+        """
+        async with self._lock:
+            for s in self._proxies:
+                if s.host == host and s.port == port and s.scheme == scheme:
+                    s.fail_count += 1
+                    s.consecutive_fails += 1
+                    s.last_used = time.time()
+                    if s.consecutive_fails >= self._max_fails:
+                        s.enabled = False
+                        logger.warning(
+                            "代理 %s 连续失败 %d 次，已隔离",
+                            s.key, s.consecutive_fails,
+                        )
+                    return True
         return False
 
     # ── 魔术方法 ─────────────────────────────────────────────────────
 
     def __repr__(self) -> str:
-        alive = len(self._get_alive())
+        alive = sum(1 for s in self._proxies if s.enabled)
         total = len(self._proxies)
         strategy_name = self._strategy
         return f"AsyncProxyPool(alive={alive}/{total}, strategy={strategy_name})"
 
     def __len__(self) -> int:
-        return len(self._get_alive())
+        return sum(1 for s in self._proxies if s.enabled)
 
     def __contains__(self, proxy_key: str) -> bool:
         return any(s.key == proxy_key for s in self._proxies)
