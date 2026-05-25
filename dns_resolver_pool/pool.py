@@ -4,6 +4,7 @@ import logging
 import threading
 import time
 import random
+from collections import deque
 from enum import Enum
 
 import dns.resolver
@@ -16,7 +17,7 @@ from dns_resolver_pool.servers import (
     _OVERSEAS,
     HEALTH_CHECK_DOMAINS,
 )
-from resource_pool.base import ResourcePool, SelectionStrategy as SelectionStrategyProtocol
+from resource_pool.base import ResourcePool, StrategyProtocol
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +79,7 @@ class DNSResolverPool(ResourcePool):
         self._cache: dict[str, tuple[list[str], float]] = {}
         self._cache_ttl = cache_ttl
         self._max_cache_size = max_cache_size
-        self._cache_order: list[str] = []  # 插入顺序，用于 LRU 淘汰
+        self._cache_order: deque[str] = deque()  # 插入顺序，O(1) LRU 淘汰
         self._max_fails = max_consecutive_fails
         self._revive_after = revive_after
         self._strategy = strategy
@@ -221,7 +222,7 @@ class DNSResolverPool(ResourcePool):
         return self._strategy
 
     @strategy.setter
-    def strategy(self, value: SelectStrategy | SelectionStrategyProtocol) -> None:
+    def strategy(self, value: SelectStrategy | StrategyProtocol) -> None:
         self._strategy = value
 
     def __contains__(self, ip: str) -> bool:
@@ -357,7 +358,7 @@ class DNSResolverPool(ResourcePool):
             ips, expires = entry
             if time.time() > expires:
                 del self._cache[key]
-                # 惰性清理 order（不遍历全列表，仅在 get 时移除）
+                # 惰性清理 order（不遍历，仅在访问时移除）
                 try:
                     self._cache_order.remove(key)
                 except ValueError:
@@ -375,9 +376,9 @@ class DNSResolverPool(ResourcePool):
                     pass
             self._cache[key] = (ips, time.time() + self._cache_ttl)
             self._cache_order.append(key)
-            # LRU 淘汰：超过上限则逐出最早条目
+            # LRU 淘汰：超过上限则逐出最早条目（O(1)）
             while len(self._cache_order) > self._max_cache_size:
-                oldest = self._cache_order.pop(0)
+                oldest = self._cache_order.popleft()
                 self._cache.pop(oldest, None)
                 logger.debug("缓存淘汰: %s", oldest)
 
@@ -386,7 +387,12 @@ class DNSResolverPool(ResourcePool):
     def __repr__(self) -> str:
         alive = len(self._get_alive())
         total = len(self._servers)
-        return f"DNSResolverPool(alive={alive}/{total}, strategy={self._strategy.value})"
+        if isinstance(self._strategy, SelectStrategy):
+            strategy_name = self._strategy.value
+        else:
+            strategy_name = type(self._strategy).__name__
+        return f"DNSResolverPool(alive={alive}/{total}, strategy={strategy_name})"
 
     def __len__(self) -> int:
+        """返回当前可用（alive）服务器数量，被隔离的不计入"""
         return len(self._get_alive())

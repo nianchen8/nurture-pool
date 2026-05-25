@@ -17,13 +17,14 @@
         pass
 """
 
-from user_agent_pool.pool import UserAgentPool, UAReserve
+from user_agent_pool.pool import UserAgentPool, UAReserve, UAStrategy
 from user_agent_pool.exceptions import PoolExhaustedException, InvalidAgentException
 from user_agent_pool.agents import VALID_CATEGORIES, AVAILABLE_PROFILES
 
 __all__ = [
     "UserAgentPool",
     "UAReserve",
+    "UAStrategy",
     "PoolExhaustedException",
     "InvalidAgentException",
     "VALID_CATEGORIES",

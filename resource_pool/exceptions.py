@@ -1,5 +1,7 @@
 """资源池公共异常基类"""
 
+__all__ = ["PoolExhaustedError", "ResourceUnhealthyError"]
+
 
 class PoolExhaustedError(Exception):
     """池中所有资源均已不可用时抛出

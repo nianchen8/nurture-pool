@@ -3,6 +3,7 @@
 import logging
 import random
 import threading
+from enum import Enum
 from typing import Iterator
 
 from user_agent_pool.exceptions import PoolExhaustedException, InvalidAgentException
@@ -15,6 +16,12 @@ from user_agent_pool.agents import (
 from resource_pool.base import ResourcePool
 
 logger = logging.getLogger(__name__)
+
+
+class UAStrategy(Enum):
+    """UA 选取策略"""
+    WEIGHTED = "weighted"
+    UNIFORM = "uniform"
 
 
 class UserAgentPool(ResourcePool):
@@ -40,8 +47,9 @@ class UserAgentPool(ResourcePool):
             pass
     """
 
-    def __init__(self) -> None:
+    def __init__(self, strategy: UAStrategy = UAStrategy.WEIGHTED) -> None:
         self._agents: dict[str, list[AgentEntry]] = {}
+        self._strategy = strategy
         self._init_defaults()
         self._lock = threading.Lock()
 
@@ -57,12 +65,15 @@ class UserAgentPool(ResourcePool):
 
     # ── 公开 API ─────────────────────────────────────────────────────
 
-    def get(self, category: str = "all", weighted: bool = True) -> str:
+    def get(self, category: str = "all", weighted: bool | None = None,
+            exclude: set[str] | None = None) -> str:
         """从池中获取一个 User-Agent 字符串
 
         Args:
             category: desktop | mobile | tablet | all
-            weighted: True=按权重加权随机；False=均匀随机
+            weighted: True=按权重加权随机；False=均匀随机；
+                      None=使用池级 strategy 默认值
+            exclude: 排除包含这些关键词的 UA（如 {"Firefox", "Linux"}）
 
         Returns:
             User-Agent 字符串
@@ -70,20 +81,22 @@ class UserAgentPool(ResourcePool):
         Raises:
             PoolExhaustedException: 该分类下无可用 UA
         """
-        candidates = self._pick_candidates(category)
+        candidates = self._pick_candidates(category, exclude)
         if not candidates:
             logger.error("UA 池分类 '%s' 已耗尽", category)
             raise PoolExhaustedException(category)
 
-        if weighted:
+        use_weighted = weighted if weighted is not None else (self._strategy == UAStrategy.WEIGHTED)
+        if use_weighted:
             return self._weighted_choice(candidates)
         return random.choice(candidates)["ua"]
 
-    def get_all(self, category: str = "all") -> list[str]:
+    def get_all(self, category: str = "all", exclude: set[str] | None = None) -> list[str]:
         """获取该分类下所有 UA 字符串（不修改池）"""
-        return [entry["ua"] for entry in self._pick_candidates(category)]
+        return [entry["ua"] for entry in self._pick_candidates(category, exclude)]
 
-    def get_headers(self, category: str = "all", weighted: bool = True) -> dict[str, str]:
+    def get_headers(self, category: str = "all", weighted: bool | None = None,
+                    exclude: set[str] | None = None) -> dict[str, str]:
         """获取完整的请求头 Profile（包含 User-Agent + 配套请求头）
 
         返回的字典可直接用于 requests.get(url, headers=headers)。
@@ -92,15 +105,20 @@ class UserAgentPool(ResourcePool):
 
         如果所选 UA 没有关联 profile，则只返回 {"User-Agent": ua}。
 
+        Args:
+            weighted: True=加权；False=均匀；None=使用池级默认策略
+            exclude: 排除包含这些关键词的 UA
+
         Raises:
             PoolExhaustedException: 该分类下无可用 UA
         """
-        candidates = self._pick_candidates(category)
+        candidates = self._pick_candidates(category, exclude)
         if not candidates:
             logger.error("UA 池分类 '%s' 已耗尽（get_headers）", category)
             raise PoolExhaustedException(category)
 
-        if weighted:
+        use_weighted = weighted if weighted is not None else (self._strategy == UAStrategy.WEIGHTED)
+        if use_weighted:
             entry = self._weighted_pick(candidates)
         else:
             entry = random.choice(candidates)
@@ -162,7 +180,7 @@ class UserAgentPool(ResourcePool):
         return {c: len(v) for c, v in self._agents.items()}
 
     def register_profile(self, key: str, headers: dict[str, str]) -> None:
-        """注册自定义 Header Profile
+        """注册自定义 Header Profile（线程安全）
 
         注册后可在 add() 时通过 profile=key 引用，
         也可在 agents._HEADER_PROFILES 中直接添加。
@@ -170,11 +188,12 @@ class UserAgentPool(ResourcePool):
         Raises:
             ValueError: key 已存在
         """
-        if key in _HEADER_PROFILES:
-            raise ValueError(f"Profile '{key}' 已存在")
-        if "User-Agent" in headers:
-            raise ValueError("Profile 不应包含 'User-Agent'，该字段由池自动填充")
-        _HEADER_PROFILES[key] = dict(headers)
+        with self._lock:
+            if key in _HEADER_PROFILES:
+                raise ValueError(f"Profile '{key}' 已存在")
+            if "User-Agent" in headers:
+                raise ValueError("Profile 不应包含 'User-Agent'，该字段由池自动填充")
+            _HEADER_PROFILES[key] = dict(headers)
         logger.info("已注册 Header Profile: %s (%d 字段)", key, len(headers))
 
     def __contains__(self, ua: str) -> bool:
@@ -185,7 +204,7 @@ class UserAgentPool(ResourcePool):
                     return True
         return False
 
-    def reserve(self, category: str = "all", weighted: bool = True) -> "UAReserve":
+    def reserve(self, category: str = "all", weighted: bool | None = None) -> "UAReserve":
         """上下文管理器 —— 取出一个 UA（从池中移除），退出时自动归还
 
         使用::
@@ -193,7 +212,17 @@ class UserAgentPool(ResourcePool):
             with pool.reserve("mobile") as ua:
                 requests.get(url, headers={"User-Agent": ua})
         """
-        return UAReserve(self, category, weighted)
+        use_weighted = weighted if weighted is not None else (self._strategy == UAStrategy.WEIGHTED)
+        return UAReserve(self, category, use_weighted)
+
+    @property
+    def strategy(self) -> UAStrategy:
+        """池级默认选取策略（get/get_headers 未显式传 weighted 时生效）"""
+        return self._strategy
+
+    @strategy.setter
+    def strategy(self, value: UAStrategy) -> None:
+        self._strategy = value
 
     # ── 内部方法 ─────────────────────────────────────────────────────
 
@@ -207,15 +236,21 @@ class UserAgentPool(ResourcePool):
                     return True
         return False
 
-    def _pick_candidates(self, category: str) -> list[AgentEntry]:
+    def _pick_candidates(self, category: str, exclude: set[str] | None = None) -> list[AgentEntry]:
         if category == "all":
             candidates: list[AgentEntry] = []
             with self._lock:
                 for entries in self._agents.values():
                     candidates.extend(entries)
-            return candidates
-        with self._lock:
-            return list(self._agents.get(category, []))
+        else:
+            with self._lock:
+                candidates = list(self._agents.get(category, []))
+        if exclude:
+            candidates = [
+                e for e in candidates
+                if not any(kw.lower() in e["ua"].lower() for kw in exclude)
+            ]
+        return candidates
 
     @staticmethod
     def _weighted_pick(entries: list[AgentEntry]) -> AgentEntry:
@@ -236,13 +271,16 @@ class UserAgentPool(ResourcePool):
         """加权随机选择 UA 字符串"""
         return UserAgentPool._weighted_pick(entries)["ua"]
 
-    @staticmethod
-    def _build_headers(entry: AgentEntry) -> dict[str, str]:
+    def _build_headers(self, entry: AgentEntry) -> dict[str, str]:
         """从 entry 构建完整请求头字典"""
         headers: dict[str, str] = {"User-Agent": entry["ua"]}
         profile_key = entry.get("profile", "")
-        if profile_key and profile_key in _HEADER_PROFILES:
-            headers.update(_HEADER_PROFILES[profile_key])
+        if profile_key:
+            with self._lock:
+                if profile_key in _HEADER_PROFILES:
+                    headers.update(_HEADER_PROFILES[profile_key])
+                else:
+                    logger.warning("Profile '%s' 不存在，仅返回 User-Agent", profile_key)
         return headers
 
     def __repr__(self) -> str:
@@ -250,6 +288,7 @@ class UserAgentPool(ResourcePool):
         return f"UserAgentPool({stats})"
 
     def __len__(self) -> int:
+        """返回池中 UA 总数（含所有分类和状态，与 alive 概念无关）"""
         return sum(len(v) for v in self._agents.values())
 
     def __iter__(self) -> Iterator[str]:

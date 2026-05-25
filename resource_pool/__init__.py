@@ -31,6 +31,7 @@ from resource_pool.exceptions import PoolExhaustedError, ResourceUnhealthyError
 _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     # attr_name → (module, qualname)
     "UserAgentPool":              ("user_agent_pool", "UserAgentPool"),
+    "UAStrategy":                 ("user_agent_pool", "UAStrategy"),
     "UAReserve":                  ("user_agent_pool", "UAReserve"),
     "VALID_CATEGORIES":           ("user_agent_pool", "VALID_CATEGORIES"),
     "AVAILABLE_PROFILES":         ("user_agent_pool", "AVAILABLE_PROFILES"),
@@ -43,7 +44,7 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "PoolExhaustedError":         ("resource_pool.exceptions", "PoolExhaustedError"),
     "ResourceUnhealthyError":     ("resource_pool.exceptions", "ResourceUnhealthyError"),
     "ResourcePool":               ("resource_pool.base", "ResourcePool"),
-    "SelectionStrategy":          ("resource_pool.base", "SelectionStrategy"),
+    "SelectionStrategy":          ("resource_pool.base", "StrategyProtocol"),
 }
 
 
@@ -68,6 +69,7 @@ __all__ = [
     "SelectionStrategy",
     # UA 池
     "UserAgentPool",
+    "UAStrategy",
     "UAReserve",
     "VALID_CATEGORIES",
     "AVAILABLE_PROFILES",

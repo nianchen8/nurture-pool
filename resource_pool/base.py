@@ -29,7 +29,7 @@ class ResourcePool(ABC):
         return False
 
 
-class SelectionStrategy(ABC):
+class StrategyProtocol(ABC):
     """DNS 选择策略协议 —— 实现此协议的 callable 对象可作为自定义策略
 
     使用示例::
