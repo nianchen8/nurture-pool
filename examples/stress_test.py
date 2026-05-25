@@ -429,7 +429,7 @@ def test_dns_extreme() -> int:
     for t in threads:
         t.join()
 
-    log(f"   策略热切: 3 线程 × 20 次 = 60 次操作")
+    log("   策略热切: 3 线程 × 20 次 = 60 次操作")
     if strategy_errors:
         fail(f"2.6 策略热切异常: {strategy_errors[:3]}")
         fails += 1

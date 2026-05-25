@@ -7,7 +7,7 @@ import pytest
 from resource_pool.base_async import AsyncDummyLock, AsyncResourcePool
 from resource_pool.exceptions import PoolExhaustedError
 from resource_pool.orchestrator_async import AsyncPoolOrchestrator
-from user_agent_pool.pool_async import AsyncUserAgentPool, AsyncUAReserve
+from user_agent_pool.pool_async import AsyncUserAgentPool
 from dns_resolver_pool.pool_async import AsyncDNSResolverPool
 from proxy_pool.pool_async import AsyncProxyPool
 
@@ -113,7 +113,7 @@ class TestAsyncUserAgentPool:
     async def test_reserve_all_category(self):
         pool = AsyncUserAgentPool()
         before = len(pool)
-        async with pool.reserve("all") as ua:
+        async with pool.reserve("all") as _ua:
             assert len(pool) == before - 1
         assert len(pool) == before
 

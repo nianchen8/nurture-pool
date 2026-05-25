@@ -17,7 +17,6 @@
 from __future__ import annotations
 
 import logging
-import time
 from urllib.parse import urlparse
 
 try:
@@ -76,7 +75,7 @@ def demo_thread_safe_off() -> None:
                 # ua 池 get() 返回的是字符串，需要转成 dict
                 headers = {"User-Agent": headers}
 
-            domain = urlparse(url).hostname or "httpbin.org"
+            _domain = urlparse(url).hostname or "httpbin.org"
             dns_ip = combo.get("dns_ip", "")
             proxy_url = combo.get("proxy", "")
 

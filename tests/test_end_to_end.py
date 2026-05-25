@@ -4,7 +4,6 @@
 不依赖真实网络请求，使用 mock + 本地代理完成验证。
 """
 
-import json
 import threading
 import time
 from unittest.mock import patch, MagicMock
@@ -13,7 +12,7 @@ import pytest
 
 from resource_pool import (
     UserAgentPool, DNSResolverPool, ProxyPool,
-    UAStrategy, SelectStrategy, ProxyStrategy, PoolOrchestrator,
+    SelectStrategy, ProxyStrategy, PoolOrchestrator,
     PoolExhaustedError,
 )
 from user_agent_pool.exceptions import PoolExhaustedException as UAPoolExhausted

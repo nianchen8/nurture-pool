@@ -53,7 +53,7 @@ async def demo_httpx_integration():
         # 获取资源组合
         headers = await ua_pool.get_headers("desktop")
         dns_ip = await dns_pool.resolve("www.baidu.com")  # 缓存命中
-        proxies = await proxy_pool.get_dict()
+        _proxies = await proxy_pool.get_dict()
 
         logger.info("资源就绪: UA=%s..., DNS首选=%s", headers["User-Agent"][:30], dns_ip)
 
@@ -98,7 +98,7 @@ async def demo_aiohttp_concurrent():
     async def worker(session: aiohttp.ClientSession, worker_id: int):
         """每个 worker 独立获取 UA + DNS"""
         headers = await ua_pool.get_headers("desktop")
-        dns_ip = await dns_pool.resolve("httpbin.org")
+        _dns_ip = await dns_pool.resolve("httpbin.org")
 
         try:
             async with session.get(
