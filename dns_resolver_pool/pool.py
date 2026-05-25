@@ -17,7 +17,7 @@ from dns_resolver_pool.servers import (
     _OVERSEAS,
     HEALTH_CHECK_DOMAINS,
 )
-from resource_pool.base import ResourcePool, StrategyProtocol
+from resource_pool.base import ResourcePool, StrategyProtocol, _DummyLock
 
 logger = logging.getLogger(__name__)
 
@@ -74,16 +74,18 @@ class DNSResolverPool(ResourcePool):
         max_cache_size: int = 4096,
         max_consecutive_fails: int = 3,
         revive_after: int = 120,
+        thread_safe: bool = True,
     ) -> None:
         self._servers: list[ServerState] = []
         self._cache: dict[str, tuple[list[str], float]] = {}
         self._cache_ttl = cache_ttl
         self._max_cache_size = max_cache_size
-        self._cache_order: deque[str] = deque()  # 插入顺序，O(1) LRU 淘汰
+        self._cache_order: deque[str] = deque()
         self._max_fails = max_consecutive_fails
         self._revive_after = revive_after
         self._strategy = strategy
-        self._lock = threading.Lock()
+        self._thread_safe = thread_safe
+        self._lock = threading.Lock() if thread_safe else _DummyLock()
         self._rr_index = 0
         self._last_revive_check: float = 0.0
         self._load_defaults(regions)
@@ -217,6 +219,20 @@ class DNSResolverPool(ResourcePool):
             self._cache.clear()
             self._cache_order.clear()
 
+    def close(self) -> None:
+        """释放线程本地 Resolver 引用
+
+        在长期运行的服务中，若使用了短生命周期线程池（线程频繁创建/销毁），
+        可定期调用此方法释放已退出线程持有的 Resolver 对象。
+
+        常规 ThreadPoolExecutor（线程复用）场景无需调用。
+        """
+        with self._lock:
+            for s in self._servers:
+                # 替换为新的 threading.local，旧引用由 GC 回收
+                s._resolvers = threading.local()
+        logger.info("已释放所有线程本地 Resolver 引用")
+
     @property
     def strategy(self) -> SelectStrategy:
         return self._strategy
@@ -259,14 +275,18 @@ class DNSResolverPool(ResourcePool):
         else:
             return self._random_order(alive)
 
-    @staticmethod
-    def _do_resolve(state: ServerState, domain: str, record_type: str, timeout: float) -> list[str]:
-        # 每线程复用 Resolver 实例（dns.resolver.Resolver 非线程安全）
-        resolver = getattr(state._resolvers, "instance", None)
-        if resolver is None:
+    def _do_resolve(self, state: ServerState, domain: str, record_type: str, timeout: float) -> list[str]:
+        if self._thread_safe:
+            # 多线程：每线程复用独立 Resolver 实例
+            resolver = getattr(state._resolvers, "instance", None)
+            if resolver is None:
+                resolver = dns.resolver.Resolver()
+                resolver.nameservers = [state.ip]
+                state._resolvers.instance = resolver
+        else:
+            # 单线程：直接创建，无 thread-local 开销
             resolver = dns.resolver.Resolver()
             resolver.nameservers = [state.ip]
-            state._resolvers.instance = resolver
         resolver.timeout = timeout
         resolver.lifetime = timeout
         start = time.monotonic()
@@ -306,8 +326,9 @@ class DNSResolverPool(ResourcePool):
             for s in self._servers:
                 if not s.enabled and (now - s.last_health) > self._revive_after:
                     s.enabled = True
-                    s.consecutive_fails = 0
-                    logger.info("DNS %s (%s) 超过复活时间，已重新启用", s.ip, s.name)
+                    # 只给一次机会：再失败立即重新隔离
+                    s.consecutive_fails = max(0, self._max_fails - 1)
+                    logger.info("DNS %s (%s) 超过复活时间，已重新启用（试用中）", s.ip, s.name)
 
     def _on_success(self, state: ServerState, ip_count: int) -> None:
         with self._lock:
@@ -368,12 +389,9 @@ class DNSResolverPool(ResourcePool):
 
     def _cache_set(self, key: str, ips: list[str]) -> None:
         with self._lock:
-            # 若 key 已存在（用不同 DNS 得到同一结果），先移除旧位置
+            # 防御：如果另一线程已缓存此 key，不覆盖（保留先写入的结果）
             if key in self._cache:
-                try:
-                    self._cache_order.remove(key)
-                except ValueError:
-                    pass
+                return
             self._cache[key] = (ips, time.time() + self._cache_ttl)
             self._cache_order.append(key)
             # LRU 淘汰：超过上限则逐出最早条目（O(1)）

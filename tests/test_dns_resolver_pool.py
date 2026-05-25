@@ -234,3 +234,18 @@ class TestFaultIsolation:
         stats = pool.stats()
         s114 = next(s for s in stats if s["ip"] == "114.114.114.114")
         assert s114["enabled"] is True, "超过复活时间应自动恢复"
+
+
+class TestThreadSafeOff:
+    """thread_safe=False 模式"""
+
+    def test_resolve_works(self):
+        pool = DNSResolverPool(regions=("domestic",), thread_safe=False)
+        ip = pool.resolve("www.baidu.com", timeout=5.0)
+        assert isinstance(ip, str)
+
+    def test_health_check_works(self):
+        pool = DNSResolverPool(regions=("domestic",), thread_safe=False)
+        results = pool.health_check(timeout=5.0)
+        assert isinstance(results, dict)
+        assert len(results) > 0

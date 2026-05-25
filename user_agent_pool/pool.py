@@ -13,7 +13,7 @@ from user_agent_pool.agents import (
     _HEADER_PROFILES,
     AgentEntry,
 )
-from resource_pool.base import ResourcePool
+from resource_pool.base import ResourcePool, _DummyLock
 
 logger = logging.getLogger(__name__)
 
@@ -47,11 +47,13 @@ class UserAgentPool(ResourcePool):
             pass
     """
 
-    def __init__(self, strategy: UAStrategy = UAStrategy.WEIGHTED) -> None:
+    def __init__(self, strategy: UAStrategy = UAStrategy.WEIGHTED,
+                 thread_safe: bool = True) -> None:
         self._agents: dict[str, list[AgentEntry]] = {}
         self._strategy = strategy
         self._init_defaults()
-        self._lock = threading.Lock()
+        self._thread_safe = thread_safe
+        self._lock = threading.Lock() if thread_safe else _DummyLock()
 
     # ── 初始化 ───────────────────────────────────────────────────────
 

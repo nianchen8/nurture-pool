@@ -16,12 +16,20 @@
     dns_pool.health_check()
     ip = dns_pool.resolve("www.example.com")
 
-    # 统一捕获异常
+    统一捕获异常
     from resource_pool import PoolExhaustedError
     try:
         ip = dns_pool.resolve("blocked.example.com")
     except PoolExhaustedError:
         print("所有 DNS 都失败了")
+
+高并发建议::
+
+    所有池操作均受 threading.Lock 保护。百级以上并发建议：
+    1. 为不同业务线创建独立池实例，减少锁争用
+    2. DNS 池配合缓存命中率可大幅降低锁持有时间
+    3. UA 池 get/get_headers 是读多写少，锁争用低
+    4. 编排器内部的 _fetch_from_pool 在锁外执行，并发友好
 """
 
 from resource_pool.exceptions import PoolExhaustedError, ResourceUnhealthyError
@@ -44,7 +52,12 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "PoolExhaustedError":         ("resource_pool.exceptions", "PoolExhaustedError"),
     "ResourceUnhealthyError":     ("resource_pool.exceptions", "ResourceUnhealthyError"),
     "ResourcePool":               ("resource_pool.base", "ResourcePool"),
-    "SelectionStrategy":          ("resource_pool.base", "StrategyProtocol"),
+    "StrategyProtocol":           ("resource_pool.base", "StrategyProtocol"),
+    "PoolOrchestrator":           ("resource_pool.orchestrator", "PoolOrchestrator"),
+    "ProxyPool":                  ("proxy_pool", "ProxyPool"),
+    "ProxyStrategy":              ("proxy_pool", "ProxyStrategy"),
+    "ProxyPoolExhaustedException":("proxy_pool.exceptions", "PoolExhaustedException"),
+    "ProxyUnhealthyException":    ("proxy_pool.exceptions", "ProxyUnhealthyException"),
 }
 
 
@@ -66,7 +79,9 @@ __all__ = [
     "ResourceUnhealthyError",
     # 抽象基类
     "ResourcePool",
-    "SelectionStrategy",
+    "StrategyProtocol",
+    # 编排器
+    "PoolOrchestrator",
     # UA 池
     "UserAgentPool",
     "UAStrategy",
@@ -80,4 +95,9 @@ __all__ = [
     "SelectStrategy",
     "DNSPoolExhaustedException",
     "ResourceUnhealthyException",
+    # Proxy 池
+    "ProxyPool",
+    "ProxyStrategy",
+    "ProxyPoolExhaustedException",
+    "ProxyUnhealthyException",
 ]

@@ -5,6 +5,14 @@ from typing import Any, Iterator
 import threading
 
 
+class _DummyLock:
+    """空操作锁 —— thread_safe=False 时替代 threading.Lock，零开销"""
+    def __enter__(self) -> "_DummyLock":
+        return self
+    def __exit__(self, *args: object) -> None:
+        pass
+
+
 class ResourcePool(ABC):
     """所有资源池的抽象基类
 

@@ -185,3 +185,28 @@ class TestWeightedRandom:
         low_weight_count = counts.get("LowWeightBot/1.0", 0)
         high_weight_count = counts.get("HighWeightBot/1.0", 0)
         assert high_weight_count > low_weight_count * 3
+
+
+class TestThreadSafeOff:
+    """thread_safe=False 模式"""
+
+    def test_basic_operations_work(self):
+        pool = UserAgentPool(thread_safe=False)
+        ua = pool.get("desktop")
+        assert isinstance(ua, str) and len(ua) > 10
+
+    def test_exclude_works(self):
+        pool = UserAgentPool(thread_safe=False)
+        ua = pool.get("desktop", exclude={"Firefox"})
+        assert "Firefox" not in ua
+
+    def test_count_works(self):
+        pool = UserAgentPool(thread_safe=False)
+        stats = pool.count()
+        assert "desktop" in stats
+        assert isinstance(pool.count("mobile"), int)
+
+    def test_get_headers_works(self):
+        pool = UserAgentPool(thread_safe=False)
+        headers = pool.get_headers("desktop")
+        assert "User-Agent" in headers

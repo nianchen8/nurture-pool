@@ -36,4 +36,4 @@ dev = ["pytest>=8.0"]
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["resource_pool*", "user_agent_pool*", "dns_resolver_pool*"]
+include = ["resource_pool*", "user_agent_pool*", "dns_resolver_pool*", "proxy_pool*"]
