@@ -1,7 +1,0 @@
-docs: sync with v1.0.5 short API layer
-
-- quickstart: rewrite all examples to use `import resource_pool` short API
-- cookbook: add dual-path note at top
-- deep-dive: architecture diagram adds _shortcuts layer
-- CHANGELOG: add v1.0.5 entry
-- pyproject: bump to 1.0.5, README badge synced
