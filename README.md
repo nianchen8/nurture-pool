@@ -1,6 +1,26 @@
 # Resource Pool ![version](https://img.shields.io/badge/version-1.0.4-blue)
 
-> 一套可扩展的网络资源池框架——**爬虫三件套**开箱即用，同步/异步双模。
+> 可扩展的爬虫资源池微框架 —— **爬虫三件套**开箱即用，同步/异步双模。
+
+短路径只需一个 import，长路径支持深度定制。
+
+```python
+import resource_pool
+
+ua = resource_pool.UA()
+proxy = resource_pool.Proxy("1.2.3.4:8080")
+dns = resource_pool.DNS()
+
+# 单独使用
+ua_string = ua.pick()              # 轮换 User-Agent
+headers = ua.headers()              # 完整反爬请求头
+proxy_url = proxy.pick()            # 轮换代理
+ip = dns.resolve("www.example.com") # 轮换 DNS
+
+# 一次拿全套
+c = resource_pool.combo(ua=ua, proxy=proxy, dns=dns)
+print(c.ua, c.proxy, c.dns)
+```
 
 ---
 
@@ -27,18 +47,23 @@ Python ≥ 3.10。核心依赖：`dnspython ≥ 2.6`。可选：`aiohttp`、`fak
 ## 30 秒跑起来
 
 ```python
-from resource_pool import UserAgentPool, DNSResolverPool, ProxyPool, PoolOrchestrator
+import resource_pool
 
-ua = UserAgentPool()
-dns = DNSResolverPool()
-dns.health_check()
-proxy = ProxyPool()
-proxy.add_proxy({"scheme": "http", "host": "127.0.0.1", "port": 8080})
+# 换 UA
+ua = resource_pool.UA()
+headers = ua.headers()                   # dict，直接传给 requests
 
-orch = PoolOrchestrator(ua=ua, dns=dns, proxy=proxy)
-combo = orch.next()  # PoolCombo：支持 combo.ua / combo["proxy"] / {**combo}
+# 换代理
+proxy = resource_pool.Proxy("1.2.3.4:8080")
+proxies = proxy.pick_dict()              # dict，直接传给 requests
 
-requests.get(url, headers=combo["ua"], proxies=combo["proxy"])
+# 换 DNS
+dns = resource_pool.DNS()
+ip = dns.resolve("www.example.com")       # str
+
+# 一次拿全套
+c = resource_pool.combo(ua=ua, proxy=proxy, dns=dns)
+requests.get(url, headers=c.ua, proxies=c.proxy)
 ```
 
 ---
@@ -50,6 +75,8 @@ requests.get(url, headers=combo["ua"], proxies=combo["proxy"])
 | 🟢 刚学爬虫 | [5 分钟快速上手](docs/guides/quickstart.md) | 安装 → 第一个 UA 轮换 → 三件事一起做 |
 | 🔵 日常写爬虫 | [场景实战](docs/guides/cookbook.md) | 反反爬 / 代理生命周期 / Scrapy 集成 / 异步版 / API 速查 |
 | 🟣 架构/调优 | [深入架构](docs/guides/deep-dive.md) | 锁层级 / 策略协议 / 自定义池 / 性能基准 / 调优 |
+
+> 短别名（`UA`/`Proxy`/`DNS`/`combo`）包装了完整版 API。需要深度定制时，同样用 `from resource_pool import UserAgentPool, PoolOrchestrator`。
 
 生产部署参考 → [PRODUCTION.md](docs/PRODUCTION.md)
 

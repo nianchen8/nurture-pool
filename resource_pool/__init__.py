@@ -1,40 +1,35 @@
-"""Resource Pool —— 可扩展的网络资源池框架
+"""Resource Pool —— 爬虫资源池微框架
 
-开箱即用的爬虫资源调度：User-Agent 池（含 Header Profile 组） + DNS 解析器池 + 代理池。
+短路径（日常使用）::
 
-基本用法::
+    import resource_pool
 
-    from resource_pool import UserAgentPool, DNSResolverPool, ProxyPool, SelectStrategy
+    ua = resource_pool.UA()
+    ua.pick()                        # 轮换 User-Agent
+    ua.headers()                      # 完整反爬请求头
 
-    # UA 池
-    ua_pool = UserAgentPool()
-    ua = ua_pool.get("desktop")
-    headers = ua_pool.get_headers("mobile")     # 完整 Header Profile
+    proxy = resource_pool.Proxy("1.2.3.4:8080")
+    proxy.pick()                      # 轮换代理
 
-    # DNS 池
+    dns = resource_pool.DNS()
+    dns.resolve("www.example.com")    # 轮换 DNS 解析
+
+    c = resource_pool.combo(ua=ua, dns=dns, proxy=proxy)
+    # c.ua / c.dns / c.proxy
+
+长路径（深度定制）::
+
+    from resource_pool import UserAgentPool, DNSResolverPool, ProxyPool, PoolOrchestrator
+
+    ua_pool = UserAgentPool(strategy=UAStrategy.WEIGHTED)
     dns_pool = DNSResolverPool(strategy=SelectStrategy.LATENCY_WEIGHTED)
     dns_pool.health_check()
-    ip = dns_pool.resolve("www.example.com")
-
-    # 代理池
     proxy_pool = ProxyPool()
     proxy_pool.add_proxy({"scheme": "http", "host": "127.0.0.1", "port": 8080})
-    proxies = proxy_pool.get_dict()
+    proxy_pool.health_check()
 
-    # 统一捕获异常
-    from resource_pool import PoolExhaustedError
-    try:
-        ip = dns_pool.resolve("blocked.example.com")
-    except PoolExhaustedError:
-        print("所有 DNS 都失败了")
-
-高并发建议::
-
-    所有池操作均受 threading.Lock 保护。百级以上并发建议：
-    1. 为不同业务线创建独立池实例，减少锁争用
-    2. DNS 池配合缓存命中率可大幅降低锁持有时间
-    3. UA 池 get/get_headers 是读多写少，锁争用低
-    4. 编排器内部的 _fetch_from_pool 在锁外执行，并发友好
+    orch = PoolOrchestrator(ua=ua_pool, dns=dns_pool, proxy=proxy_pool)
+    combos = list(orch.combos(limit=100))
 """
 
 from __future__ import annotations
@@ -87,6 +82,11 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "ProxyStrategy":              ("proxy_pool", "ProxyStrategy"),
     "ProxyPoolExhaustedException":("proxy_pool.exceptions", "PoolExhaustedException"),
     "ProxyUnhealthyException":    ("proxy_pool.exceptions", "ProxyUnhealthyException"),
+    # 短别名（日常使用）
+    "UA":                         ("resource_pool._shortcuts", "UA"),
+    "Proxy":                      ("resource_pool._shortcuts", "Proxy"),
+    "DNS":                        ("resource_pool._shortcuts", "DNS"),
+    "combo":                      ("resource_pool._shortcuts", "combo"),
 }
 
 
@@ -132,4 +132,9 @@ __all__ = [
     "ProxyStrategy",
     "ProxyPoolExhaustedException",
     "ProxyUnhealthyException",
+    # 短别名
+    "UA",
+    "Proxy",
+    "DNS",
+    "combo",
 ]

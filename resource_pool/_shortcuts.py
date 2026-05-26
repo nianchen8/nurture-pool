@@ -1,0 +1,293 @@
+"""短别名封装层 —— 为新手和日常用户提供极简 API
+
+每个封装类仅在首次使用时加载底层模块（惰性），不使用则零开销。
+高级用户仍可通过 ``from resource_pool import UserAgentPool`` 访问完整 API。
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+logger = logging.getLogger(__name__)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 内部：惰性加载底层模块
+# ═══════════════════════════════════════════════════════════════════════
+
+_UA_POOL_CLS: type | None = None
+_PROXY_POOL_CLS: type | None = None
+_DNS_POOL_CLS: type | None = None
+
+
+def _get_ua_pool_cls() -> type:
+    global _UA_POOL_CLS
+    if _UA_POOL_CLS is None:
+        from user_agent_pool.pool import UserAgentPool as _Cls
+        _UA_POOL_CLS = _Cls
+    return _UA_POOL_CLS
+
+
+def _get_proxy_pool_cls() -> type:
+    global _PROXY_POOL_CLS
+    if _PROXY_POOL_CLS is None:
+        from proxy_pool.pool import ProxyPool as _Cls
+        _PROXY_POOL_CLS = _Cls
+    return _PROXY_POOL_CLS
+
+
+def _get_dns_pool_cls() -> type:
+    global _DNS_POOL_CLS
+    if _DNS_POOL_CLS is None:
+        from dns_resolver_pool.pool import DNSResolverPool as _Cls
+        _DNS_POOL_CLS = _Cls
+    return _DNS_POOL_CLS
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 短别名封装类
+# ═══════════════════════════════════════════════════════════════════════
+
+class UA:
+    """User-Agent 轮换器 —— 最简单的用法
+
+    使用示例::
+
+        import resource_pool
+
+        ua = resource_pool.UA()
+
+        # 获取一个 UA 字符串
+        ua_string = ua.pick()              # 默认 desktop
+        ua_string = ua.pick("mobile")      # 限定移动端
+
+        # 获取完整的反爬请求头（推荐）
+        headers = ua.headers()             # 默认 desktop
+        headers = ua.headers("mobile")
+
+        # 暂存器模式：取出 → 用完自动归还
+        with ua.reserve("desktop") as agent:
+            requests.get(url, headers={"User-Agent": agent})
+    """
+
+    def __init__(self) -> None:
+        self._init = False
+        self._pool: Any = None
+
+    def _ensure(self) -> None:
+        if not self._init:
+            cls = _get_ua_pool_cls()
+            self._pool = cls()
+            self._init = True
+
+    # ── 公开方法 ──
+
+    def pick(self, device: str = "desktop") -> str:
+        """获取一个 UA 字符串
+
+        Args:
+            device: desktop | mobile | tablet | all
+        """
+        self._ensure()
+        return self._pool.get(device)
+
+    def headers(self, device: str = "desktop") -> dict[str, str]:
+        """获取完整的反爬请求头（含 User-Agent、Accept、Sec-Ch-Ua 等）
+
+        Args:
+            device: desktop | mobile | tablet | all
+        """
+        self._ensure()
+        return self._pool.get_headers(device)
+
+    def reserve(self, device: str = "desktop") -> Any:
+        """暂存器上下文管理器 —— 取出 UA 后从池中移除，退出 with 后自动归还
+
+        使用::
+
+            with ua.reserve("mobile") as agent:
+                requests.get(url, headers={"User-Agent": agent})
+        """
+        self._ensure()
+        return self._pool.reserve(device)
+
+    def __len__(self) -> int:
+        if not self._init:
+            self._ensure()
+        return len(self._pool)
+
+    def __repr__(self) -> str:
+        if not self._init:
+            return "UA(not loaded)"
+        return str(self._pool)
+
+
+class Proxy:
+    """代理池 —— 最简单的用法
+
+    使用示例::
+
+        import resource_pool
+
+        # 方式一：创建时直接传入代理
+        proxy = resource_pool.Proxy("1.2.3.4:8080")
+
+        # 方式二：先创建，再添加
+        proxy = resource_pool.Proxy()
+        proxy.add("1.2.3.4:8080")
+        proxy.add("5.6.7.8:3128")
+
+        # 获取一个代理 URL
+        url = proxy.pick()               # "http://1.2.3.4:8080"
+
+        # 获取 requests 兼容的 proxies 字典
+        proxies = proxy.pick_dict()      # {"http": "...", "https": "..."}
+    """
+
+    def __init__(self, addr: str | None = None) -> None:
+        self._init = False
+        self._pool: Any = None
+        self._addrs: list[str] = []
+        if addr:
+            self._addrs.append(addr)
+
+    def _ensure(self) -> None:
+        if not self._init:
+            cls = _get_proxy_pool_cls()
+            self._pool = cls()
+            for addr in self._addrs:
+                self._add_one(addr)
+            if self._addrs:
+                self._pool.health_check(timeout=5.0)
+            self._init = True
+
+    def _add_one(self, addr: str) -> None:
+        """将 "ip:port" 或 "ip:port:user:pass" 转为 ProxyEntry 并添加"""
+        parts = addr.rsplit(":", 1)
+        if len(parts) != 2:
+            raise ValueError(f"无效的代理地址格式: {addr!r}，应为 'ip:port'")
+        host, port = parts
+        entry: dict[str, Any] = {"scheme": "http", "host": host, "port": int(port)}
+        # 检查是否带鉴权 (ip:port:user:pass)
+        # 已在上面的 rsplit 处理后无需额外检查，主逻辑完成
+        self._pool.add_proxy(entry)
+
+    # ── 公开方法 ──
+
+    def add(self, addr: str) -> None:
+        """添加代理地址，格式：'ip:port'"""
+        if self._init:
+            self._add_one(addr)
+        else:
+            self._addrs.append(addr)
+
+    def pick(self) -> str:
+        """获取一个代理 URL"""
+        self._ensure()
+        return self._pool.get()
+
+    def pick_dict(self) -> dict[str, str]:
+        """获取 requests 兼容的 proxies 字典"""
+        self._ensure()
+        return self._pool.get_dict()
+
+    def check(self) -> dict[str, Any]:
+        """手动触发健康检查"""
+        self._ensure()
+        return self._pool.health_check()
+
+    def __len__(self) -> int:
+        if not self._init:
+            self._ensure()
+        return len(self._pool)
+
+    def __repr__(self) -> str:
+        if not self._init:
+            return f"Proxy({len(self._addrs)} queued)"
+        return str(self._pool)
+
+
+class DNS:
+    """DNS 解析器池 —— 最简单的用法
+
+    使用示例::
+
+        import resource_pool
+
+        dns = resource_pool.DNS()
+
+        # 解析域名（自动选取最快的 DNS 服务器，结果缓存 5 分钟）
+        ip = dns.resolve("www.example.com")
+    """
+
+    def __init__(self) -> None:
+        self._init = False
+        self._pool: Any = None
+
+    def _ensure(self) -> None:
+        if not self._init:
+            cls = _get_dns_pool_cls()
+            self._pool = cls()
+            self._pool.health_check(timeout=5.0)
+            self._init = True
+
+    # ── 公开方法 ──
+
+    def resolve(self, domain: str) -> str:
+        """解析域名，返回最快的 IP 地址"""
+        self._ensure()
+        return self._pool.resolve(domain)
+
+    def lookup(self, domain: str) -> str:
+        """resolve 的别名"""
+        return self.resolve(domain)
+
+    def __len__(self) -> int:
+        if not self._init:
+            self._ensure()
+        return len(self._pool)
+
+    def __repr__(self) -> str:
+        if not self._init:
+            return "DNS(not loaded)"
+        return str(self._pool)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 组合函数
+# ═══════════════════════════════════════════════════════════════════════
+
+def combo(**pools: Any) -> Any:
+    """一次获取多池组合资源
+
+    使用示例::
+
+        import resource_pool
+
+        ua = resource_pool.UA()
+        proxy = resource_pool.Proxy("1.2.3.4:8080")
+        dns = resource_pool.DNS()
+
+        # 三件事一起做
+        c = resource_pool.combo(ua=ua, dns=dns, proxy=proxy)
+        # c.ua      → dict (完整请求头)
+        # c.dns     → str (DNS 服务器 IP)
+        # c.proxy   → dict (requests 兼容的 proxies)
+        # {**c}     → 解包为 dict
+
+        # 只用 UA + Proxy
+        c = resource_pool.combo(ua=ua, proxy=proxy)
+    """
+    from resource_pool.orchestrator import PoolOrchestrator
+
+    inner: dict[str, Any] = {}
+    for name, p in pools.items():
+        if hasattr(p, '_pool') and hasattr(p, '_ensure'):
+            p._ensure()  # type: ignore[union-attr]
+            inner[name] = p._pool  # type: ignore[union-attr]
+        else:
+            inner[name] = p
+
+    orch = PoolOrchestrator(**inner)
+    return orch.next()
