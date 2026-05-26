@@ -4,6 +4,8 @@
 
 每个场景给出"最短可运行代码"——你复制走改改就能用。
 
+> **双路径提示**：本指南使用完整版 API（`from resource_pool import UserAgentPool` 等）。日常简单轮换推荐用[短别名](quickstart.md)：`import resource_pool; ua = resource_pool.UA()`。两条路径共享同一套底层实现，随时混合使用。
+
 ---
 
 ## User-Agent 池

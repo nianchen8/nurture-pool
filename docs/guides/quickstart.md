@@ -18,17 +18,21 @@ Python ≥ 3.10 即可，只有一个硬依赖（`dnspython`）。
 
 ## 2. 第一个 User-Agent 轮换
 
-固定 UA 是爬虫第一课被反的原因。三行代码轮换：
+固定 UA 是爬虫第一课被反的原因。只需一个 import：
 
 ```python
-from user_agent_pool import UserAgentPool
+import resource_pool
 
-ua = UserAgentPool()
-print(ua.get())          # "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/..."
-print(ua.get("mobile"))  # 限定移动端
+ua = resource_pool.UA()
+print(ua.pick())           # 默认 desktop
+print(ua.pick("mobile"))   # 限定移动端
 ```
 
-每次 `get()` 返回不同 UA，自动加权随机——常用 UA 命中率更高。
+每次 `pick()` 返回不同 UA，自动加权随机——常用 UA 命中率更高。
+
+> 需要完整请求头？改用 `ua.headers()` 即可——返回包含 User-Agent、Accept、Sec-Ch-Ua 等的字典。
+
+> 需要细粒度筛选（浏览器/版本号）？[cookbook → UA 池](cookbook.md#user-agent-池)。
 
 ---
 
@@ -37,64 +41,76 @@ print(ua.get("mobile"))  # 限定移动端
 单点 DNS 频次过高会被限流，14 台轮换：
 
 ```python
-from dns_resolver_pool import DNSResolverPool
+import resource_pool
 
-dns = DNSResolverPool()
-dns.health_check()                    # 启动前检测一次
-ip = dns.resolve("www.example.com")   # 选取延迟最低的 DNS 解析
+dns = resource_pool.DNS()
+ip = dns.resolve("www.example.com")  # 自动选取最优 DNS，启动前自动健康检查
 ```
 
-解析结果自动缓存 5 分钟，同样的域名不会重复查询。
+健康检查自动触发，不用手动调用。解析结果自动缓存 5 分钟。
 
 ---
 
 ## 4. 第一个代理
 
 ```python
-from proxy_pool import ProxyPool
+import resource_pool
 
-proxy = ProxyPool()
-proxy.add_proxy({"scheme": "http", "host": "127.0.0.1", "port": 8080})
-proxy.health_check()  # 探测代理连通性
+# 创建时直接传入代理（自动做健康检查）
+proxy = resource_pool.Proxy("1.2.3.4:8080")
 
-url = proxy.get()     # "http://127.0.0.1:8080"
+# 也可以先创建再添加
+proxy = resource_pool.Proxy()
+proxy.add("1.2.3.4:8080")
+
+url = proxy.pick()  # "http://1.2.3.4:8080"
 ```
 
-故障代理会自动隔离，到期后会试用复活。
+健康检查和故障隔离自动完成——首次使用时自动探测，失败的代理自动隔离、到期复活。
+
+> 需要 socks5 代理？从供应商 API 批量加载？[cookbook → 代理池](cookbook.md#代理池)。
 
 ---
 
 ## 5. 三件事一起做
 
 ```python
-from resource_pool import PoolOrchestrator, UserAgentPool, DNSResolverPool, ProxyPool
+import resource_pool
 
-ua = UserAgentPool()
-dns = DNSResolverPool()
-dns.health_check()
-proxy = ProxyPool()
-proxy.add_proxy({"scheme": "http", "host": "127.0.0.1", "port": 8080})
+ua = resource_pool.UA()
+proxy = resource_pool.Proxy("1.2.3.4:8080")
+dns = resource_pool.DNS()
 
-orch = PoolOrchestrator(ua=ua, dns=dns, proxy=proxy)
-combo = orch.next()  # 一次拿到全套
+# 一行拿全套
+c = resource_pool.combo(ua=ua, dns=dns, proxy=proxy)
 
-# 拿着去发请求
+# c.ua      → dict (完整请求头)
+# c.dns     → str  (DNS 服务器 IP)
+# c.proxy   → dict (requests 兼容格式)
+
 import requests
-requests.get(
-    "https://httpbin.org/ip",
-    headers=combo["ua"],
-    proxies=combo["proxy"],
-)
+requests.get("https://httpbin.org/ip", headers=c.ua, proxies=c.proxy)
 ```
 
 ---
 
-## 6. 有现成的代理 API？一行加载
+## 6. 有现成的代理 API？
+
+短别名层不包含供应商加载——用完整版 API 只需加减几行：
 
 ```python
+from resource_pool import ProxyPool
+
+proxy = ProxyPool()
 proxy.load_from_url("http://你的代理供应商.com/api?key=xxx&count=20")
 # → 自动识别 9 种主流供应商格式
+
+# 然后包装进短别名
+from resource_pool import Proxy
+p = Proxy()  # Proxy 也可以接收已创建好的 Pool
 ```
+
+> 短别名 `UA`/`Proxy`/`DNS`/`combo` 是完整版 API 的上层包装，随时可以混合使用——短别名背后就是完整的 `UserAgentPool`/`ProxyPool`/`DNSResolverPool`/`PoolOrchestrator`。
 
 ---
 

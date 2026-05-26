@@ -1,5 +1,16 @@
 # 更新日志
 
+## v1.0.5 (2026-05-26)
+
+- 🚀 **短别名封装层**：`import resource_pool` 一行搞定日常使用
+  - `resource_pool.UA()` — `pick()`/`headers()`/`reserve()`，包装 UserAgentPool
+  - `resource_pool.Proxy("ip:port")` — 直传地址格式，`pick()`/`pick_dict()`
+  - `resource_pool.DNS()` — 自动 health_check，`resolve()`/`lookup()`
+  - `resource_pool.combo(ua=ua, proxy=proxy, dns=dns)` — 一行拿全套
+- 🔧 短别名纯包装设计：惰性加载零开销、底层 API 完全不变
+- 📝 文档同步：quickstart 改用短 API、cookbook 标注双路径、deep-dive 架构图更新
+- 🧪 274 测试全部通过，零破坏
+
 ## v1.0.4 (2026-05-26)
 
 - 🛡️ **AsyncProxyPool 锁粒度优化**：`get()`/`get_dict()` 选择逻辑移出锁外，内部方法（`_get_alive`/`_try_revive`/`_on_success`）各自加锁，与同步版并发模型一致，避免协程串行化

@@ -1,4 +1,4 @@
-# Resource Pool ![version](https://img.shields.io/badge/version-1.0.4-blue)
+# Resource Pool ![version](https://img.shields.io/badge/version-1.0.5-blue)
 
 > 可扩展的爬虫资源池微框架 —— **爬虫三件套**开箱即用，同步/异步双模。
 

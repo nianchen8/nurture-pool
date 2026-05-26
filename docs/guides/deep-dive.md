@@ -10,28 +10,48 @@
 ┌──────────────────────────────────────────────┐
 │              应用层                           │
 │   requests / Scrapy / aiohttp / httpx        │
-└──────────────────┬───────────────────────────┘
-                   │
-┌──────────────────▼───────────────────────────┐
-│           PoolOrchestrator (编排器)            │
-│   isinstance 注册表分派 + PoolCombo 抽象       │
-│   同步：PoolOrchestrator  /  异步：AsyncPool*   │
-└────┬──────────┬──────────┬───────────────────┘
-     │          │          │
-┌────▼───┐ ┌───▼────┐ ┌──▼──────────────┐
-│UA Pool │ │DNS Pool│ │  Proxy Pool      │
-│ReadWr  │ │16-shard│ │  Lock / asyncio  │
-│Lock    │ │cache   │ │  .Lock           │
-│Strategy│ │Strategy│ │  Strategy        │
-└────────┘ └────────┘ └──────────────────┘
-     │          │          │
-┌────▼──────────▼──────────▼───────────────────┐
+└──────┬──────────────────┬────────────────────┘
+       │                  │
+       │  短路径 (v1.0.5+)│  长路径
+       │  import          │  from resource_pool
+       │  resource_pool   │  import UserAgentPool
+       │                  │
+┌──────▼──────────┐ ┌─────▼────────────────────┐
+│   _shortcuts.py  │ │  PoolOrchestrator (编排器) │
+│  UA / Proxy /    │ │  isinstance 注册表分派     │
+│  DNS / combo()   │ │  PoolCombo 抽象            │
+└──────┬──────────┘ └─────┬────────────────────┘
+       │                  │
+┌──────▼───┐ ┌───▼────┐ ┌──▼──────────────┐
+│UA Pool   │ │DNS Pool│ │  Proxy Pool      │
+│ReadWrite │ │16-shard│ │  Lock / asyncio  │
+│Lock      │ │cache   │ │  .Lock           │
+│Strategy  │ │Strategy│ │  Strategy        │
+└──────────┘ └────────┘ └──────────────────┘
+       │          │          │
+┌──────▼──────────▼──────────▼─────────────────┐
 │            ResourcePool ABC (基类)             │
 │   StrategyProtocol · DummyLock · 惰性导入     │
 └──────────────────────────────────────────────┘
 ```
 
-四个子包通过 `resource_pool/__init__.py` 的 `__getattr__` 惰性加载——`from resource_pool import X` 只加载你用到的模块。
+四个子包通过 `resource_pool/__init__.py` 的 `__getattr__` 惰性加载。
+
+### 短别名层 (`_shortcuts.py`)
+
+v1.0.5 新增的上层包装，为日常用户提供极简 API：
+
+- `UA()` / `Proxy()` / `DNS()` —— 每个类在实例化时才加载底层模块，不使用零开销
+- 自动 `health_check`：DNS 和 Proxy 首次 `resolve()`/`pick()` 时自动触发
+- `combo(**pools)` —— 提取快捷类内部的真实池实例，组建成 `PoolOrchestrator` 后返回组合结果
+- 短别名是**纯包装**：`.pick()` → 底层 `.get()`，不做功能阉割
+
+```python
+# 短别名背后 —— 完全透明
+ua = resource_pool.UA()          # 惰性创建 UserAgentPool()
+ua.pick()                        # → ua._pool.get("desktop")
+ua.headers()                     # → ua._pool.get_headers("desktop")
+```
 
 ---
 
