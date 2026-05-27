@@ -1,6 +1,6 @@
 # 生产环境部署指南
 
-> 适用版本：v1.1.0+ | 最后更新：2026-05-27
+> 适用版本：v1.2.0+ | 最后更新：2026-05-27
 
 本指南覆盖 resource-pool 在生产环境中的配置、监控、排障和最佳实践。
 
@@ -428,7 +428,54 @@ graph TB
 
 ---
 
-## 6. 升级清单
+## 6. 养成数据管理
+
+养成 API 将资源持久化到安装目录，生产环境需注意备份和恢复策略。
+
+### 6.1 定时备份养成数据
+
+```python
+import resource_pool, shutil, os
+from datetime import datetime
+
+# ── 导出养成数据到独立备份目录 ──
+backup_dir = f"./backup/{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+os.makedirs(backup_dir, exist_ok=True)
+
+for pool_type in ("ua", "proxy", "dns"):
+    path = resource_pool.export_fed(pool_type, backup_dir)
+    if path:
+        print(f"✓ {pool_type}: {path}")
+    else:
+        print(f"- {pool_type}: 无养成数据")
+
+# ── 查看统计 ──
+print(resource_pool.status())
+```
+
+### 6.2 恢复养成数据
+
+```python
+# 恢复代理养成数据：创建 Pool → import → health_check
+from proxy_pool import ProxyPool
+
+pool = ProxyPool()
+pool.import_proxy(backup_data["items"])  # 从导出文件读取的 JSON
+pool.health_check()
+```
+
+### 6.3 注意事项
+
+| 场景 | 说明 |
+|------|------|
+| pip upgrade | 养成数据写入安装目录，`pip install --upgrade` 会覆盖——**升级前务必 `export_fed()` 备份** |
+| 多进程 | 每个子进程独立调用 `feed_*()`，数据文件写入是原子的（先写 `.tmp` 再 rename） |
+| 跨项目共享 | 使用 `resource_pool.export_fed("proxy", "/shared/")` 导出 → 另一台机器 `import_proxy()` 导入 |
+| 清除养成 | `resource_pool.reset("proxy")` 仅清除 fed 条目，内置数据不受影响 |
+
+---
+
+## 7. 升级清单
 
 从 v0.7.0 升级到后续版本时的检查点：
 
