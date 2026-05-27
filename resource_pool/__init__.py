@@ -101,6 +101,8 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "remove_fed":                 ("resource_pool._feeding", "remove_fed"),
     "reset":                      ("resource_pool._feeding", "reset"),
     "sync_seeds":                 ("resource_pool._feeding", "sync_seeds"),
+    "probe_proxy":                ("resource_pool._feeding", "probe_proxy"),
+    "validate_fed_proxies":       ("resource_pool._feeding", "validate_fed_proxies"),
 }
 
 
@@ -165,4 +167,6 @@ __all__ = [
     "remove_fed",
     "reset",
     "sync_seeds",
+    "probe_proxy",
+    "validate_fed_proxies",
 ]

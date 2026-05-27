@@ -100,6 +100,9 @@ class AsyncPoolOrchestrator:
         for name, pool in pools_snapshot.items():
             try:
                 combo[name] = await self._fetch_from_pool_async(name, pool)
+            except PoolExhaustedError:
+                # 池耗尽是预期行为，直接向上传播由调用方决定兜底策略
+                raise
             except Exception as exc:  # noqa: BLE001
                 logger.error("异步编排器从 '%s' 获取资源失败: %s", name, exc)
                 raise
@@ -197,6 +200,3 @@ class AsyncPoolOrchestrator:
     def __repr__(self) -> str:
         names = ", ".join(self._pools.keys())
         return f"AsyncPoolOrchestrator({names})"
-
-
-

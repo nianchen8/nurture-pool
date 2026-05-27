@@ -1,5 +1,30 @@
 # 更新日志
 
+## v1.2.2 (2026-05-28)
+
+第二轮全量代码审查修复版本 —— CI 修复 + 代理探测 + 冗余清理。
+
+### 🔴 致命修复
+- 🐛 **`DNSResolverPool._load_defaults` TypeError 修复**：本地开发时 `__init__` 向 `_load_defaults()` 多传了 `data_dir` / `load_builtin` / `load_fed` 三个参数（方法签名仅接受 `regions`），导致 `DNSResolverPool()` 实例化立即崩溃、CI 4 个 Python 版本矩阵全部测试失败。已恢复为 `_load_defaults(regions)`，`_data_dir` / `_load_builtin` / `_load_fed` 由方法内部通过 `self` 访问（与异步版一致）
+
+### 🚀 新功能
+- 🚀 **`resource_pool.probe_proxy()` 代理探测**：单代理连通性检测（socket 连接 + HTTP 代理验证），支持 http/https/socks5
+- 🚀 **`resource_pool.validate_fed_proxies()` 养成代理批量验证**：三次失败测试 + 失败列表自动导出到 `proxy_failed_export.json`
+- 两个新函数通过 `resource_pool.__init__` 惰性导入对外暴露
+
+### 🔧 修复
+- 🔧 **CI lint 修复**：8 个 F401 未使用导入（`user_agent_pool` sync/async + `resource_pool._feeding`）
+- 🔧 **`.gitignore` 规则修复**：`data/` → `/data/`，仅忽略根目录 `data/`，避免误伤 `resource_pool/data/` 关键数据文件
+- 🔧 **`orchestrator_async.py` 尾部多余空行清理**
+
+### 🧹 冗余与对齐
+- 🧹 **`proxy_pool/pool.py`** 移除 `save_to_file()` 内冗余 `import os as _os`（`os` 已在模块级导入）
+- 🧹 **`AsyncProxyState` 补齐 `score` 属性**：与同步版 `ProxyState.score` 评分逻辑一致，`AsyncProxyPool._calc_score()` 改为委托调用消除重复代码
+- 🧹 **`ProxyPool` 支持字符串策略**：`ProxyStrategy(Enum)` → `ProxyStrategy(str, Enum)`，`__init__` / `strategy.setter` 均可接受 `"latency_weighted"` 字符串（与 async 版对齐）
+- 🧹 **`orchestrator_async.py` 异常分级**：`next()` 区分 `PoolExhaustedError`（预期传播，不记 ERROR）与未预期异常（记 ERROR 后 raise），与同步版 `PoolOrchestrator.next()` 行为一致
+
+- 🧪 全量 286 测试通过 + ruff All checks passed
+
 ## v1.2.1 (2026-05-28)
 
 全量代码审查修复版本 —— 同步/异步双路径功能对齐。

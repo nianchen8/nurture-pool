@@ -1,4 +1,4 @@
-# Resource Pool ![version](https://img.shields.io/badge/version-1.2.0-blue)
+# Resource Pool ![version](https://img.shields.io/badge/version-1.2.2-blue)
 
 > 爬虫资源池——UA 请求头、DNS、代理，三件套一把抓。
 
@@ -99,6 +99,15 @@ docs/
 ```
 
 ## 更新日志
+
+### v1.2.2 (2026-05-28)
+
+- 🐛 **致命修复**：`DNSResolverPool._load_defaults` 参数错误导致 CI 全红，4 个 Python 版本测试全部崩溃
+- 🚀 **`resource_pool.probe_proxy()` / `validate_fed_proxies()`**：代理连通性探测 + 养成代理批量三次验证
+- 🔧 **CI lint 全绿**：8 个 F401 修复，ruff check 零错误
+- 🔧 **`.gitignore`**: `data/` → `/data/` 精确化，避免误伤 `resource_pool/data/`
+- 🧹 **冗余消除**：移除 pool.py 重复 import、AsyncProxyState 补齐 score 属性、ProxyPool 支持字符串策略、编排器异常分级
+- 🧪 286 测试全部通过
 
 ### v1.2.0 (2026-05-27)
 

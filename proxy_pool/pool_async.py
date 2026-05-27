@@ -78,6 +78,35 @@ class AsyncProxyState:
     def key(self) -> str:
         return f"{self.scheme}://{self.host}:{self.port}"
 
+    @property
+    def score(self) -> float:
+        """代理综合评分（0-100）
+
+        评分维度：
+        - 响应时间（40%）：延迟越低分越高
+        - 成功率（40%）：success / (success + fail)
+        - 稳定性（20%）：连续失败越多扣分越多
+        """
+        total_requests = self.success_count + self.fail_count
+        if total_requests == 0:
+            return 50.0  # 新代理初始分
+
+        if self.latency_ms <= 0:
+            latency_score = 100.0
+        else:
+            latency_score = max(0.0, 100.0 * (1.0 - self.latency_ms / 5000.0))
+
+        success_rate = self.success_count / total_requests
+        success_score = success_rate * 100.0
+
+        stability_penalty = min(100.0, self.consecutive_fails * 25.0)
+        stability_score = max(0.0, 100.0 - stability_penalty)
+
+        return round(
+            latency_score * 0.4 + success_score * 0.4 + stability_score * 0.2,
+            1,
+        )
+
 
 class AsyncProxyPool(AsyncResourcePool):
     """协程安全的代理资源池（asyncio 版本）
@@ -337,32 +366,8 @@ class AsyncProxyPool(AsyncResourcePool):
 
     @staticmethod
     def _calc_score(state: AsyncProxyState) -> float:
-        """代理综合评分（0-100）
-
-        评分维度：
-        - 响应时间（40%）：延迟越低分越高
-        - 成功率（40%）：success / (success + fail)
-        - 稳定性（20%）：连续失败越多扣分越多
-        """
-        total_requests = state.success_count + state.fail_count
-        if total_requests == 0:
-            return 50.0
-
-        if state.latency_ms <= 0:
-            latency_score = 100.0
-        else:
-            latency_score = max(0.0, 100.0 * (1.0 - state.latency_ms / 5000.0))
-
-        success_rate = state.success_count / total_requests
-        success_score = success_rate * 100.0
-
-        stability_penalty = min(100.0, state.consecutive_fails * 25.0)
-        stability_score = max(0.0, 100.0 - stability_penalty)
-
-        return round(
-            latency_score * 0.4 + success_score * 0.4 + stability_score * 0.2,
-            1,
-        )
+        """代理综合评分（0-100），委托给 AsyncProxyState.score"""
+        return state.score
 
     # ── 加载 / 持久化 ────────────────────────────────────────────────
 

@@ -24,7 +24,7 @@ from resource_pool.base import DummyLock, ResourcePool, StrategyProtocol
 logger = logging.getLogger(__name__)
 
 
-class ProxyStrategy(Enum):
+class ProxyStrategy(str, Enum):
     """代理选择策略"""
     LATENCY_WEIGHTED = "latency_weighted"
     ROUND_ROBIN = "round_robin"
@@ -122,7 +122,7 @@ class ProxyPool(ResourcePool):
 
     def __init__(
         self,
-        strategy: ProxyStrategy | StrategyProtocol = ProxyStrategy.LATENCY_WEIGHTED,
+        strategy: ProxyStrategy | str | StrategyProtocol = ProxyStrategy.LATENCY_WEIGHTED,
         max_consecutive_fails: int = 3,
         revive_after: int = 120,
         thread_safe: bool = True,
@@ -132,6 +132,11 @@ class ProxyPool(ResourcePool):
         load_builtin: bool = True,
         load_fed: bool = True,
     ) -> None:
+        if isinstance(strategy, str) and not isinstance(strategy, ProxyStrategy):
+            try:
+                strategy = ProxyStrategy(strategy)
+            except ValueError:
+                raise ValueError(f"无效策略 '{strategy}'，可选: {[e.value for e in ProxyStrategy]}") from None
         self._proxies: list[ProxyState] = []
         self._strategy: ProxyStrategy | StrategyProtocol = strategy
         self._max_fails = max_consecutive_fails
@@ -681,9 +686,7 @@ class ProxyPool(ResourcePool):
         Returns:
             写入的代理数量
         """
-        import os as _os
-
-        _os.makedirs(_os.path.dirname(path) or ".", exist_ok=True)
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         with self._lock:
             data = [
                 {
@@ -824,7 +827,12 @@ class ProxyPool(ResourcePool):
         return self._strategy
 
     @strategy.setter
-    def strategy(self, value: ProxyStrategy | StrategyProtocol) -> None:
+    def strategy(self, value: ProxyStrategy | str | StrategyProtocol) -> None:
+        if isinstance(value, str) and not isinstance(value, ProxyStrategy):
+            try:
+                value = ProxyStrategy(value)
+            except ValueError:
+                raise ValueError(f"无效策略 '{value}'，可选: {[e.value for e in ProxyStrategy]}") from None
         if not isinstance(value, ProxyStrategy) and not callable(value):
             raise TypeError(f"策略必须是 ProxyStrategy 枚举或 callable，收到: {type(value).__name__}")
         self._strategy = value

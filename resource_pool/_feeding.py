@@ -15,7 +15,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -1065,3 +1064,183 @@ def remove_fed(pool_type: str, index: int | str) -> bool:
                     logger.info("remove_fed: 已移除 %s %s", pool_type, key_str)
                     return True
         return False
+
+
+def probe_proxy(proxy: str, timeout: float = 5.0) -> tuple[bool, str]:
+    """探测单个代理是否可用
+
+    通过 socket 连接 + HTTP 请求验证代理连通性。
+
+    Args:
+        proxy: 代理 URL，如 "http://1.2.3.4:8080" 或 "socks5://1.2.3.4:1080"
+        timeout: 超时秒数
+
+    Returns:
+        (是否可用, 错误信息)
+    """
+    import socket
+    from urllib import request, error as urllib_error
+    from urllib.parse import urlparse
+
+    # 解析代理地址
+    try:
+        parsed = urlparse(proxy)
+        host = parsed.hostname or ""
+        port = parsed.port or 80
+    except Exception as e:
+        return False, f"代理地址解析失败: {e}"
+
+    if not host:
+        return False, "代理地址缺少主机名"
+
+    # 1. Socket 预检
+    try:
+        sock = socket.create_connection((host, port), timeout=min(timeout, 3.0))
+        sock.close()
+    except Exception as e:
+        return False, f"连接失败 {host}:{port}: {e}"
+
+    # 2. HTTP 代理验证（仅对 http/https 代理）
+    if parsed.scheme in ("http", "https"):
+        try:
+            proxy_handler = request.ProxyHandler({parsed.scheme: proxy})
+            opener = request.build_opener(proxy_handler)
+            req = request.Request(
+                "http://httpbin.org/ip",
+                headers={"User-Agent": "resource_pool-probe/1.0"},
+            )
+            resp = opener.open(req, timeout=timeout)
+            resp.read()
+            resp.close()
+            return True, ""
+        except urllib_error.URLError as e:
+            return False, f"HTTP 请求失败: {e.reason}"
+        except Exception as e:
+            return False, f"代理验证异常: {e}"
+    else:
+        # socks 代理仅做 socket 连通性检查
+        return True, "(socks 仅连通性检查)"
+
+
+def validate_fed_proxies(
+    timeout: float = 5.0,
+    max_retries: int = 3,
+    batch: str | None = None,
+) -> dict[str, Any]:
+    """验证所有养成代理的连通性（三次失败测试）
+
+    每个代理最多探测 max_retries 次。全部失败的代理会被收集，
+    控制台打印提醒，并导出到 proxy_failed_export.json。
+
+    Args:
+        timeout: 单次探测超时秒数
+        max_retries: 最大重试次数（默认 3）
+        batch: 仅验证指定批次，None=全部养成代理
+
+    Returns:
+        {
+            "total": 总fed代理数,
+            "passed": 通过数,
+            "failed": 失败数,
+            "failed_list": [{"proxy": ..., "reason": ..., "retries": 3}, ...],
+            "export_path": "proxy_failed_export.json" or None,
+        }
+    """
+    path = _DATA_PATHS["proxy"]
+    _, items = _load_simple_items(path)
+
+    fed_proxies = [
+        it
+        for it in items
+        if it.get("source") == "fed"
+        and (batch is None or it.get("batch") == batch)
+    ]
+
+    if not fed_proxies:
+        logger.info("validate_fed_proxies: 没有需要验证的养成代理")
+        return {
+            "total": 0,
+            "passed": 0,
+            "failed": 0,
+            "failed_list": [],
+            "export_path": None,
+        }
+
+    total = len(fed_proxies)
+    passed = 0
+    failed = 0
+    failed_list: list[dict[str, Any]] = []
+
+    for entry in fed_proxies:
+        proxy_url = entry.get("proxy", "")
+        if not proxy_url:
+            scheme = entry.get("scheme", "http")
+            host = entry.get("host", "")
+            port = entry.get("port", 0)
+            proxy_url = f"{scheme}://{host}:{port}"
+
+        ok = False
+        last_reason = ""
+        for attempt in range(1, max_retries + 1):
+            ok, reason = probe_proxy(proxy_url, timeout)
+            if ok:
+                break
+            last_reason = reason
+            if attempt < max_retries:
+                logger.debug(
+                    "代理 %s 第 %d/%d 次失败: %s，重试中...",
+                    proxy_url,
+                    attempt,
+                    max_retries,
+                    reason,
+                )
+
+        if ok:
+            passed += 1
+            logger.info("代理 %s 验证通过", proxy_url)
+        else:
+            failed += 1
+            failed_list.append({
+                "proxy": proxy_url,
+                "reason": last_reason,
+                "retries": max_retries,
+                "batch": entry.get("batch", ""),
+            })
+            logger.warning(
+                "代理 %s %d 次全部失败: %s", proxy_url, max_retries, last_reason
+            )
+
+    result: dict[str, Any] = {
+        "total": total,
+        "passed": passed,
+        "failed": failed,
+        "failed_list": failed_list,
+        "export_path": None,
+    }
+
+    if failed_list:
+        _warn_once("proxy_validate")
+        print(
+            f"\n⚠ 代理验证结果: {total} 个养成代理，"
+            f"{passed} 通过，{failed} 失败"
+        )
+
+        export_path = os.path.join(os.getcwd(), "proxy_failed_export.json")
+        try:
+            with open(export_path, "w", encoding="utf-8") as f:
+                json.dump(
+                    {
+                        "exported_at": _make_batch(),
+                        "note": "三次探测全部失败的养成代理，请检查或移除",
+                        "failed_list": failed_list,
+                    },
+                    f,
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            result["export_path"] = export_path
+            print(f"  失败代理列表已导出到: {export_path}")
+        except Exception as e:
+            logger.error("导出失败列表出错: %s", e)
+
+    return result

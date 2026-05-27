@@ -1,6 +1,6 @@
 # 生产环境部署指南
 
-> 适用版本：v1.2.0+ | 最后更新：2026-05-27
+> 适用版本：v1.2.2+ | 最后更新：2026-05-28
 
 本指南覆盖 resource-pool 在生产环境中的配置、监控、排障和最佳实践。
 
@@ -92,6 +92,9 @@ def create_pools_from_config(config_path: str = "config.toml"):
     ua_pool = UserAgentPool(
         strategy=UAStrategy(ua_cfg.get("strategy", "weighted")),
         thread_safe=ua_cfg.get("thread_safe", True),
+        data_dir=ua_cfg.get("data_dir"),          # 养成数据目录（可选）
+        load_builtin=ua_cfg.get("load_builtin", True),
+        load_fed=ua_cfg.get("load_fed", True),    # 是否加载养成条目
     )
 
     dns_cfg = cfg.get("dns_pool", {})
@@ -102,12 +105,23 @@ def create_pools_from_config(config_path: str = "config.toml"):
         max_consecutive_fails=dns_cfg.get("max_consecutive_fails", 3),
         revive_after=dns_cfg.get("revive_after", 120),
         thread_safe=dns_cfg.get("thread_safe", True),
+        data_dir=dns_cfg.get("data_dir"),          # 养成数据目录（可选）
+        load_builtin=dns_cfg.get("load_builtin", True),
+        load_fed=dns_cfg.get("load_fed", True),
     )
 
     proxy_cfg = cfg.get("proxy_pool", {})
-    proxy_pool = ProxyPool(strategy=ProxyStrategy(proxy_cfg.get("strategy", "latency_weighted")))
-    if proxy_cfg.get("min_alive"):
-        proxy_pool.min_alive = proxy_cfg["min_alive"]
+    proxy_pool = ProxyPool(
+        strategy=ProxyStrategy(proxy_cfg.get("strategy", "latency_weighted")),
+        max_consecutive_fails=proxy_cfg.get("max_consecutive_fails", 5),
+        revive_after=proxy_cfg.get("revive_after", 300),
+        thread_safe=proxy_cfg.get("thread_safe", True),
+        min_alive=proxy_cfg.get("min_alive", 0),
+        auto_refill_url=proxy_cfg.get("auto_refill_url", ""),
+        data_dir=proxy_cfg.get("data_dir"),        # 养成数据目录（可选）
+        load_builtin=proxy_cfg.get("load_builtin", True),
+        load_fed=proxy_cfg.get("load_fed", True),
+    )
 
     return ua_pool, dns_pool, proxy_pool
 ```
@@ -453,7 +467,24 @@ for pool_type in ("ua", "proxy", "dns"):
 print(resource_pool.status())
 ```
 
-### 6.2 恢复养成数据
+### 6.2 验证养成代理质量
+
+```python
+# 验证所有养成代理的连通性（三次测试，不通过自动导出失败列表）
+import resource_pool
+
+# 单代理探测
+ok, detail = resource_pool.probe_proxy("1.2.3.4:8080", timeout=5)
+print(f"探测结果: {'可用' if ok else '不可用'} — {detail}")
+
+# 批量验证养成代理
+result = resource_pool.validate_fed_proxies(
+    retries=3, timeout=5, export_failures=True,
+)
+print(f"验证完成: 通过 {result['passed']}, 失败 {result['failed']}, 导出到 {result.get('export_path', 'N/A')}")
+```
+
+### 6.3 恢复养成数据
 
 ```python
 # 恢复代理养成数据：创建 Pool → import → health_check
@@ -464,7 +495,7 @@ pool.import_proxy(backup_data["items"])  # 从导出文件读取的 JSON
 pool.health_check()
 ```
 
-### 6.3 注意事项
+### 6.4 注意事项
 
 | 场景 | 说明 |
 |------|------|

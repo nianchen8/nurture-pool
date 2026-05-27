@@ -15,11 +15,8 @@ from user_agent_pool.pool import UAStrategy, UserAgentPool
 from user_agent_pool.agents import (
     DEFAULT_AGENTS,
     VALID_CATEGORIES,
-    _HEADER_PROFILES,
-    _PROFILE_LOCK,
     AgentEntry,
     parse_ua_metadata,
-    match_profile,
 )
 from user_agent_pool.exceptions import PoolExhaustedException, InvalidAgentException
 from resource_pool.base_async import AsyncDummyLock, AsyncResourcePool

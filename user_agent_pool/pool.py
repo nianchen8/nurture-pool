@@ -28,11 +28,8 @@ from user_agent_pool.agents import (
     ACCEPT_CHROME,
     ACCEPT_FIREFOX,
     ACCEPT_SAFARI,
-    _CHROME_UA_DESKTOP,
-    _CHROME_UA_MOBILE,
     _FIREFOX_UA_DESKTOP,
     _FIREFOX_UA_MOBILE,
-    _EDGE_UA_DESKTOP,
 )
 from resource_pool.base import DummyReadWriteLock, ReadWriteLock, ResourcePool
 
