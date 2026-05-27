@@ -254,6 +254,7 @@ class AsyncProxyPool(AsyncResourcePool):
                     s.fail_count += 1
                     s.consecutive_fails += 1
                     s.last_used = time.time()
+                    s.last_health = time.time()
                     if s.consecutive_fails >= self._max_fails:
                         s.enabled = False
                         logger.warning(
@@ -669,9 +670,15 @@ class AsyncProxyPool(AsyncResourcePool):
                 return None
         return None
 
+    _PROBE_MAX_URLS: int = 3  # 最多探测几个目标 URL
+
     @staticmethod
     async def _probe_proxy(state: AsyncProxyState, timeout: float) -> bool:
-        """异步探测代理连通性"""
+        """异步探测代理连通性
+
+        先做 socket 快速预检，再走多目标 HTTP 验证：
+        最多探测 3 个不同 URL，任一成功即判定存活。
+        """
         # 1. socket 预检
         probe_timeout = min(timeout, 3.0)
         try:
@@ -694,27 +701,38 @@ class AsyncProxyPool(AsyncResourcePool):
             )
             return True  # socket 通了，乐观认为可用
 
-        target = random.choice(HEALTH_CHECK_URLS)
+        # 打乱 URL 顺序，避免每次从同一个开始
+        urls = list(HEALTH_CHECK_URLS)
+        random.shuffle(urls)
         proxy_url = state.url
-        start = time.monotonic()
-        try:
-            async with aiohttp.ClientSession(
-                timeout=aiohttp.ClientTimeout(total=timeout),
-            ) as session:
-                async with session.head(
-                    target,
-                    proxy=proxy_url,
-                ) as resp:
-                    if resp.status < 500:
-                        elapsed = (time.monotonic() - start) * 1000
-                        state.latency_ms = (
-                            state.latency_ms * 0.7 + elapsed * 0.3
-                            if state.latency_ms else elapsed
-                        )
-                        return True
-        except Exception:
-            pass
-        return False
+        per_url_timeout = max(timeout / min(len(urls), AsyncProxyPool._PROBE_MAX_URLS), 3.0)
+
+        success = False
+        for i, target in enumerate(urls):
+            if i >= AsyncProxyPool._PROBE_MAX_URLS:
+                break
+            start = time.monotonic()
+            try:
+                async with aiohttp.ClientSession(
+                    timeout=aiohttp.ClientTimeout(total=per_url_timeout),
+                ) as session:
+                    async with session.head(
+                        target,
+                        proxy=proxy_url,
+                    ) as resp:
+                        if resp.status < 500:
+                            elapsed = (time.monotonic() - start) * 1000
+                            state.latency_ms = (
+                                state.latency_ms * 0.7 + elapsed * 0.3
+                                if state.latency_ms else elapsed
+                            )
+                            success = True
+                            break
+            except Exception:
+                logger.debug("代理 %s 探测 %s 失败", state.masked_url, target)
+                continue
+
+        return success
 
     async def _get_alive(self) -> list[AsyncProxyState]:
         """获取存活代理快照（锁内操作，返回独立 list）"""

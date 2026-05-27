@@ -2,6 +2,7 @@
 
 import json
 import logging
+import os
 import random
 import socket
 import threading
@@ -15,6 +16,7 @@ from proxy_pool.exceptions import PoolExhaustedException
 from proxy_pool.servers import (
     ProxyEntry,
     VALID_SCHEMES,
+    _load_from_data_dir,
     HEALTH_CHECK_URLS,
 )
 from resource_pool.base import DummyLock, ResourcePool, StrategyProtocol
@@ -126,6 +128,9 @@ class ProxyPool(ResourcePool):
         thread_safe: bool = True,
         min_alive: int = 0,
         auto_refill_url: str = "",
+        data_dir: str | None = None,
+        load_builtin: bool = True,
+        load_fed: bool = True,
     ) -> None:
         self._proxies: list[ProxyState] = []
         self._strategy: ProxyStrategy | StrategyProtocol = strategy
@@ -139,6 +144,59 @@ class ProxyPool(ResourcePool):
         self._min_alive = min_alive
         self._auto_refill_url = auto_refill_url
         self._last_auto_maintain: float = 0.0
+        # 养成系
+        self._data_dir = data_dir
+        self._load_builtin = load_builtin
+        self._load_fed = load_fed
+        self._load_defaults()
+
+    def _load_defaults(self) -> None:
+        """加载默认代理（data_dir / JSON 数据文件 / 回退空列表）"""
+        # 1) data_dir 优先
+        if self._data_dir:
+            path = os.path.join(self._data_dir, "proxy_servers.json")
+            if os.path.isfile(path):
+                try:
+                    with open(path, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    items = data.get("items", []) if isinstance(data, dict) else []
+                    for item in items:
+                        if not isinstance(item, dict) or "host" not in item or "port" not in item:
+                            continue
+                        source = str(item.get("source", "builtin"))
+                        if source == "builtin" and not self._load_builtin:
+                            continue
+                        if source == "fed" and not self._load_fed:
+                            continue
+                        self._proxies.append(ProxyState({
+                            "scheme": str(item.get("scheme", "http")),
+                            "host": str(item["host"]),
+                            "port": int(item["port"]),
+                            "username": str(item.get("username", "")),
+                            "password": str(item.get("password", "")),
+                            "region": str(item.get("region", "unknown")),
+                            "enabled": bool(item.get("enabled", True)),
+                            "weight": int(item.get("weight", 5)),
+                        }))
+                    logger.info("已从 %s 加载 %d 个代理", path, len(self._proxies))
+                    return
+                except Exception as e:
+                    logger.warning("data_dir 代理加载失败: %s，回退", e)
+
+        # 2) 安装目录 JSON（含 fed）
+        if self._load_builtin or self._load_fed:
+            json_proxies = _load_from_data_dir()
+            if json_proxies:
+                for entry in json_proxies:
+                    source = entry.get("source", "builtin")
+                    if source == "builtin" and not self._load_builtin:
+                        continue
+                    if source == "fed" and not self._load_fed:
+                        continue
+                    self._proxies.append(ProxyState(entry))
+
+        logger.info("已加载 %d 个代理", len(self._proxies))
+
 
     # ── 公开 API ─────────────────────────────────────────────────────
 
@@ -346,7 +404,7 @@ class ProxyPool(ResourcePool):
         if isinstance(inner, list) and inner and isinstance(inner[0], dict):
             entries: list[ProxyEntry] = []
             for item in inner:
-                ip = item.get("IP") or item.get("ip") or item.get("Ip") or ""
+                ip = item.get("IP") or item.get("ip") or item.get("Ip") or item.get("host") or ""
                 port = item.get("Port") or item.get("port") or 0
                 if ip and port:
                     entries.append(ProxyPool._make_entry(
@@ -367,7 +425,7 @@ class ProxyPool(ResourcePool):
                     if isinstance(plist[0], dict):
                         entries = []
                         for item in plist:
-                            ip = item.get("ip") or item.get("IP") or ""
+                            ip = item.get("ip") or item.get("IP") or item.get("host") or ""
                             port = item.get("port") or item.get("Port") or 0
                             if ip and port:
                                 entries.append(ProxyPool._make_entry(
@@ -385,6 +443,10 @@ class ProxyPool(ResourcePool):
             if "ip" in inner and "port" in inner:
                 return [ProxyPool._make_entry(
                     inner["ip"], int(inner["port"]), default_scheme,
+                )]
+            if "host" in inner and "port" in inner:
+                return [ProxyPool._make_entry(
+                    inner["host"], int(inner["port"]), default_scheme,
                 )]
 
         return []
@@ -808,12 +870,16 @@ class ProxyPool(ResourcePool):
                 return None
         return None
 
+    _PROBE_MAX_URLS: int = 3  # 最多探测几个目标 URL
+
     def _probe_proxy(self, state: ProxyState, timeout: float) -> bool:
         """通过代理访问探测 URL，测试连通性
 
-        先做 socket 快速预检（排除僵死端口），再走 HTTP 验证。
+        先做 socket 快速预检（排除僵死端口），再走多目标 HTTP 验证：
+        最多探测 3 个不同的 URL，只要任一成功即判定为存活，
+        全部失败才视为不可用（避免单目标偶发故障导致误杀）。
         """
-        # 1. socket 预检 —— 快速淘汰端口不通/僵死连接（<2s）
+        # 1. socket 预检 —— 快速淘汰端口不通/僵死连接
         probe_timeout = min(timeout, 3.0)
         try:
             sock = socket.create_connection(
@@ -823,24 +889,38 @@ class ProxyPool(ResourcePool):
         except (OSError, socket.timeout):
             return False
 
-        # 2. HTTP 验证 —— 确认代理可转发请求
-        target = random.choice(HEALTH_CHECK_URLS)
+        # 2. 多目标 HTTP 验证 —— 确认代理可转发请求
+        #    打乱顺序避免每次都从同一个 URL 开始
+        urls = list(HEALTH_CHECK_URLS)
+        random.shuffle(urls)
         proxy_url = state.url
-        try:
-            handler = urllib.request.ProxyHandler({
-                "http": proxy_url,
-                "https": proxy_url,
-            })
-            opener = urllib.request.build_opener(handler)
-            start = time.monotonic()
-            req = urllib.request.Request(target, method="HEAD")
-            opener.open(req, timeout=timeout)
-            elapsed = (time.monotonic() - start) * 1000
-            with self._lock:
-                state.latency_ms = state.latency_ms * 0.7 + elapsed * 0.3 if state.latency_ms else elapsed
-            return True
-        except OSError:
-            return False
+        handler = urllib.request.ProxyHandler({
+            "http": proxy_url,
+            "https": proxy_url,
+        })
+        opener = urllib.request.build_opener(handler)
+
+        # 单个目标的探测超时按比例分配
+        per_url_timeout = max(timeout / min(len(urls), self._PROBE_MAX_URLS), 3.0)
+
+        success = False
+        for i, target in enumerate(urls):
+            if i >= self._PROBE_MAX_URLS:
+                break
+            try:
+                start = time.monotonic()
+                req = urllib.request.Request(target, method="HEAD")
+                opener.open(req, timeout=per_url_timeout)
+                elapsed = (time.monotonic() - start) * 1000
+                with self._lock:
+                    state.latency_ms = state.latency_ms * 0.7 + elapsed * 0.3 if state.latency_ms else elapsed
+                success = True
+                break
+            except OSError:
+                logger.debug("代理 %s 探测 %s 失败", state.masked_url, target)
+                continue
+
+        return success
 
     def _get_alive(self) -> list[ProxyState]:
         with self._lock:
@@ -886,6 +966,7 @@ class ProxyPool(ResourcePool):
                     s.fail_count += 1
                     s.consecutive_fails += 1
                     s.last_used = time.time()
+                    s.last_health = time.time()
                     if s.consecutive_fails >= self._max_fails:
                         s.enabled = False
                         logger.warning(

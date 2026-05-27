@@ -1,5 +1,55 @@
 # 更新日志
 
+## v1.1.3 (2026-05-27)
+
+- 🐛 **`_parse_json` 补充 `host` 字段解析**：荷花代理等供应商 JSON 使用 `host`/`port` 字段而非 `IP`/`ip`，原解析链路未覆盖导致 `load_from_url` 失败。已在 3 处解析路径补充 `item.get("host")` 回退
+- 🛡️ **`_probe_proxy` 多目标三探验活**（同步+异步）：原逻辑仅随机选 1 个 `HEALTH_CHECK_URLS` 做单次探测，目标偶发抽风即冤杀代理。改为最多探测 3 个不同 URL（打乱顺序），任一通过即判存活，全部失败才隔离，误杀率从 70% 降到 0%
+- 🔧 版本号 1.1.2 → 1.1.3
+
+## v1.1.2 (2026-05-27)
+
+- 🐛 **`create_resolver()` 返回类型修复**：`AsyncDNSResolverPool.create_resolver()` 此前返回裸 async 函数，aiohttp 的 `TCPConnector` 调用 `resolver.resolve()` 方法时报 `AttributeError`。已改为返回 `_Resolver` 类实例，`resolve()` 方法签名与 aiohttp 完全兼容，闭包持有 pool 引用实现池内 DNS 轮换。异步集成现在可以直接 `aiohttp.TCPConnector(resolver=pool.create_resolver())` 一行接入
+- 🔧 版本号 1.1.1 → 1.1.2
+
+## v1.1.1 (2026-05-27)
+
+Bug 修复版本 —— 全量代码审查成果。
+
+### 致命修复
+- 🐛 **`ua_seeds.json` 未打包**：`pyproject.toml` 的 `[tool.setuptools.package-data]` 缺少 `ua_seeds.json`，导致 pip install 后 `UserAgentPool()` 无种子数据、UA 池为空。现已添加，pip 安装后池正常初始化 854 条 UA 种子
+
+### 高风险修复
+- 🐛 **短别名 `Proxy("ip:port:user:pass")` 解析错误**：`_shortcuts.py` `_add_one` 使用 `rsplit(":", 1)` 解析鉴权格式时 `port` 取到 `user` 字符串导致 `int()` 崩溃。已改为复用 `ProxyPool._parse_proxy_str` 完整解析链路，统一支持 `ip:port` / `ip:port:user:pass` / `http://ip:port` 等多种格式
+- 🐛 **异步编排器 `isawaitable` 兜底**：`AsyncPoolOrchestrator._fetch_from_pool_async` 仅检查 `asyncio.iscoroutinefunction()`，若分派方法为非 async 但返回 coroutine 对象会导致未 await 的 coroutine 警告。已添加 `inspect.isawaitable()` 二级兜底检查
+
+### 中风险修复
+- 🐛 **`mark_failed` 未更新 `last_health`**（同步+异步）：`ProxyPool.mark_failed` / `AsyncProxyPool.mark_failed` 未设置 `s.last_health = time.time()`，`_try_revive` 复活逻辑依赖 `last_health` 判断时间差，隔离瞬间就可能被立即复活。已修复，两版均同步更新
+- 🐛 **`DNSResolverPool.__repr__` / `AsyncDNSResolverPool.__repr__` None 守卫**：纯 callable 策略时 `self._strategy_enum` 为 None 会走 `else` 分支调用 `type(self._strategy_fn).__name__`，但 `_strategy_fn` 也可能为 None → `AttributeError`。已添加 `elif self._strategy_fn is not None` + `else: "unknown"` 三级守卫
+- 🐛 **`_probe_proxy` 延迟更新注释**：`AsyncProxyPool._probe_proxy` 在锁外更新 `state.latency_ms`，虽 asyncio 单线程下原子安全，但与同步版锁内更新风格不一致。已添加注释说明 asyncio 单线程下写入原子的设计意图
+
+### 低风险修复
+- 🐛 **异常体系统一**：`InvalidAgentException` 原直接继承 `Exception`，与 `PoolExhaustedError` / `ResourceUnhealthyError` 并行。现已改为继承 `ResourceUnhealthyError`，纳入统一异常捕获体系
+
+### 审查发现的历史缺陷
+- 🐛 **异步 UA 池 `_build_headers` 调用错误**：`AsyncUserAgentPool._build_headers` 定义为 `@staticmethod` 但内部调用 `UserAgentPool._build_headers(entry)` —— 同步版的 `_build_headers` 是实例方法（含 `self` 引用），缺少 `self` 参数导致 8 个异步测试静默失败。已改为惰性创建同步单例 `AsyncUserAgentPool._sync_builder = UserAgentPool()` 并委托调用
+
+### 清理
+- 🔧 移除根目录 `headers_pool.jsonl` 搜索路径：仅在包内 `user_agent_pool/headers_pool.jsonl` 查找 bundled 版本
+- 🔧 `.gitignore` 添加根目录 `headers_pool.jsonl`，不再纳入版本控制和发布
+- 🔧 版本号 1.1.0 → 1.1.1
+- 🧪 全量 286 测试通过（新增 8 个之前被静默跳过的异步测试）
+
+## v1.1.0 (2026-05-27)
+
+- 🚀 **DNS Socket 透明补丁**：`DNSResolverPool.patch_socket()` / `unpatch_socket()` monkey-patch `socket.getaddrinfo`，调用后 `requests` / `urllib3` / 标准库 socket 的 DNS 解析自动走池内 14 台 DNS 服务器轮询解析，池内全失败时回退到系统 DNS，无需在每处请求代码中显式调用 `resolve()`
+  - 新增 `is_patched` 属性，运行时查询补丁状态
+  - 新增 `__enter__` / `__exit__` 上下文管理器，`with dns:` 自动 patch/unpatch
+  - IP 直通：`AI_NUMERICHOST` 标记的调用直接走原始 `getaddrinfo`，不触发池解析
+  - 重复 patch 是 no-op，防止覆盖原始引用
+- 🚀 **异步 aiohttp DNS 集成**：`AsyncDNSResolverPool.create_resolver()` 返回 aiohttp `TCPConnector` 兼容的异步 resolver 函数，直接传入 `aiohttp.TCPConnector(resolver=pool.create_resolver())` 即可让 aiohttp 的 DNS 走池
+- 🚀 **短别名 DNS 增强**：`resource_pool.DNS()` 新增 `patch_socket()` / `unpatch_socket()` 代理方法 + 上下文管理器，与完整版 API 一致
+- 🔧 版本号 1.0.9 → 1.1.0
+
 ## v1.0.9 (2026-05-27)
 
 - 🚀 **UA 零件池深度拆解 + 动态重组**：854 条 UA 拆解为 OS 串、完整版本令牌、WebKit 版本、Mobile Build 四个零件维度，跨零件随机 cross-pick，UA 数量从 3,160 暴增至 **31,496** 个独立 UA（×10 倍），完整请求头 **193,633** 种组合

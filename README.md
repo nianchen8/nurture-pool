@@ -1,6 +1,6 @@
-# Resource Pool ![version](https://img.shields.io/badge/version-1.0.9-blue)
+# Resource Pool ![version](https://img.shields.io/badge/version-1.1.3-blue)
 
-> 爬虫资源池，给懒人用的。UA / 代理 / DNS——全部帮你准备好，一行拿出来。
+> 爬虫资源池——UA 请求头、DNS、代理，三件套一把抓。
 
 ## 安装
 
@@ -8,129 +8,107 @@
 pip install git+https://github.com/nianchen8/resource-pool.git
 ```
 
-Python ≥ 3.10。核心依赖：`dnspython ≥ 2.6`。可选：`aiohttp`、`fake_useragent`。
+Python ≥ 3.10。核心依赖 `dnspython ≥ 2.6`，可选 `aiohttp`、`fake_useragent`。
 
-## 代码有多短
+## 5 秒上手
 
 ```python
-import resource_pool
-import requests
+import resource_pool, requests
 from user_agent_pool import UserAgentPool
 
-# ── 准备好 ──
-ua = UserAgentPool()                       # 854 条 UA 种子 → 零件池重组 → 31,496 独立 UA → 193,633 完整 headers
-# proxy = resource_pool.Proxy("1.2.3.4:8080")  # 代理（有代理时取消注释）
-dns = resource_pool.DNS()                  # 14 台 DNS 自动轮换
+ua = UserAgentPool()                    # 自动加载 854 种子 → 31,496 独立 UA
+dns = resource_pool.DNS()               # 14 台 DNS 轮换，惰性初始化
 
-# ── 一把抓，发给百度 ──
-c = resource_pool.combo(ua=ua, dns=dns)
-resp = requests.get("https://www.baidu.com", headers=c.ua, timeout=10)
-print(resp.status_code)  # 200
-
-# c.ua 是完整请求头 dict（不是 UA 字符串），desktop Chrome 示例：
-# {
-#     "User-Agent":            "Mozilla/5.0 … Chrome/134 …",
-#     "Accept":                "text/html,application/xhtml+xml,…",
-#     "Accept-Encoding":       "gzip, deflate, br",
-#     "Accept-Language":       "zh-CN,zh;q=0.9,en;q=0.8",
-#     "Cache-Control":         "max-age=0",
-#     "Connection":            "keep-alive",
-#     "Sec-Ch-Ua":             "\"Chromium\";v=\"134\"…",
-#     "Sec-Ch-Ua-Mobile":      "?0",
-#     "Sec-Ch-Ua-Platform":    "\"Windows\"",
-#     "Sec-Fetch-Dest":        "document",
-#     "Sec-Fetch-Mode":        "navigate",
-#     "Sec-Fetch-Site":        "none",
-#     "Sec-Fetch-User":        "?1",
-#     "Upgrade-Insecure-Requests": "1",
-# }
-# 14 字段，覆盖浏览器必发全部关键请求头。每次调用自动轮换。
+with dns:                               # patch socket，requests 的 DNS 走池
+    resp = requests.get("https://www.baidu.com",
+                        headers=ua.get_headers(), timeout=10)
+# → 200
 ```
 
-> 💡 就这么短。想在线拉 UA？装 `pip install fake-useragent` 然后 `ua.load_from_fakeua()`。每个场景的完整写法（单线程/多线程/异步/Scrapy/会话保持），见下方 [开箱即用](#1-开箱即用)。
-
-## 准备得有多全
-
-| 资源 | 没池子 | 有池子 |
-|------|------|------|
-| User-Agent | 固定一个，高频秒封 | 854 条 UA 种子 → 零件池随机重组 → 31,496 独立 UA → 193,633 完整 headers，覆盖 4 引擎（Chrome/Firefox/Safari/Edge）× 7 平台，每次随机换 |
-| DNS | 单台 DNS，频次高被限流 | 14 台 DNS 轮换 + 故障自动隔离恢复 |
-| 代理 | 单代理，一封全军覆没 | 代理池，自动评分淘汰补充 |
+> 每次请求自动换一套完整的浏览器请求头（14 字段）。有代理加一行 `resource_pool.Proxy("ip:port")`。
 
 ## 按你的深度开始
 
-| 我想…… | 从这里开始 | 内容 |
-|---------|-----------|------|
-| 🟢 抄了就���，啥都不管 | [开箱即用](docs/guides/从零到反反爬.md#1-开箱即用) | 安装 → 单/多线程 → 多进程 → 异步 → Scrapy，每段 3~8 行 |
-| 🔵 搞明白为什么这样写 | [初级定制](docs/guides/从零到反反爬.md#2-初级定制) | 原理、策略选择、数据源、UA+Proxy联动 |
-| 🟣 全部能力随我调度 | [深度定制](docs/guides/从零到反反爬.md#3-深度定制) | 三池协同、主从推送、生产运维、全 API |
-| ⚫ 源码我都能改 | [底层源码](docs/guides/从零到反反爬.md#4-底层源码) | 派系引擎、锁与协议、怎么扩展自己的池 |
+四层文档，每层都有**单线程 / 多线程 / 多进程 / 异步 / Scrapy** 五种写法的完整可运行代码：
 
-> 短别名（`UA`/`Proxy`/`DNS`/`combo`）包装了完整版 API。需要深度定制时，同样用 `from resource_pool import UserAgentPool, PoolOrchestrator`。
+| 我想…… | 从这里开始 | 5 种写法 | 内容 |
+|---------|-----------|:--:|------|
+| 🟢 抄了就跑，啥都不管 | [开箱即用](docs/guides/开箱即用.md) | ✅ | 三件套默认配置，每段复制能跑 |
+| 🔵 搞明白为什么这样写 | [初级定制](docs/guides/初级定制.md) | ✅ | 14 个旋钮逐个详解：英文名/中文名/类型/默认值/作用/场景 |
+| 🟣 全部能力随我调度 | [深度定制](docs/guides/深度定制.md) | ✅ | StrategyProtocol 写策略、register_dispatch 造池、三种锁与死锁预防 |
+| ⚫ 源码我都能改 | [底层源码](docs/guides/底层源码.md) | ✅ | 六大机制源码拆解：派系引擎 / ReadWriteLock / socket patch / dispatch / ABC / 短别名 |
 
-生产部署参考 → [PRODUCTION.md](docs/PRODUCTION.md)
+> 每层文档的 5 种写法都能直接跑——但写法完全不同。开箱即用用默认配置，初级定制拧旋钮，深度定制自己造池，底层源码展示内部机制。
 
-完整升级路线 → [UPGRADE_PLAN.md](docs/UPGRADE_PLAN.md)
+## 三件套能力速览
 
-可运行示例 → [`examples/`](examples/)
-- `simple_requests_demo.py` — 单线程零开销用法
-- `async_integration.py` — httpx + aiohttp 异步集成
-- `scrapy_integration.py` — Scrapy Middleware 完整实现
-- `stress_test.py` — 极端压力测试
+| 资源 | 无池 | 有池 |
+|------|------|------|
+| UA 请求头 | 固定一条，秒封 | 854 种子 → 零件重组 → 31,496 UA → 193,633 headers，引擎家族约束保证一致性 |
+| DNS | 单台 DNS，频次高被限流 | 14 台轮换 + LRU 缓存 + 故障隔离 + socket 透明 patch |
+| 代理 | 单代理，一封全挂 | 评分淘汰 + 自动补充 + 9 种供应商格式自动识别 |
 
----
-
-## 架构特性
+## 架构速览
 
 | 能力 | 说明 |
 |------|------|
-| **派系化 Header 组装** | 854 UA 种子 → 零件池随机重组 → 31,496 独立 UA → 193,633 完整 headers |
-| **线程安全** | UA 池 ReadWriteLock（读并发 N 倍）、Proxy 池 Lock、DNS 池 16 路缓存分片 |
-| **异步支持** | AsyncUserAgentPool / AsyncDNSResolverPool / AsyncProxyPool / AsyncPoolOrchestrator，API 与同步版完全对等 |
-| **按需开关** | `thread_safe=False` 关闭所有锁，单线程零开销 |
-| **故障隔离** | 连续失败达阈值自动隔离 → 到期试用复活（一次机会） |
-| **可插拔策略** | 内置枚举 + `StrategyProtocol` callable 自定义 |
-| **编排器注册表** | `isinstance` 精确分派，告别 `hasattr` 探测 |
-| **统一异常** | `PoolExhaustedError` / `ResourceUnhealthyError` 一把捕获 |
-| **凭据脱敏** | stats 输出 `user:***@host`，杜绝日志泄露 |
-| **类型完整** | PEP 561 `py.typed`，IDE 智能提示全覆盖 |
-
----
-
-## 各池一句话
-
-| 池 | 一句话 | 详细 |
-|---|--------|------|
-| UA 池 | 加权随机轮换 UA + 派系引擎组装完整请求头 + 暂存器模式 + 细粒度筛选 | [cookbook → UA 池](docs/guides/cookbook.md#user-agent-池) |
-| DNS 池 | 14 台 DNS 轮换解析 + LRU 缓存 + 故障隔离 | [cookbook → DNS 池](docs/guides/cookbook.md#dns-解析器池) |
-| Proxy 池 | 代理评分 + 自动补充淘汰 + 多供应商并发拉取 | [cookbook → 代理池](docs/guides/cookbook.md#代理池) |
-| 编排器 | 一行拿全套：UA + DNS + Proxy，返回 PoolCombo | [cookbook → 编排器](docs/guides/cookbook.md#编排器) |
-
----
+| 派系引擎 | Chromium / Firefox / Safari 三维路由，版本号/平台/语言段数自动同步 |
+| 线程安全 | UA 池 ReadWriteLock（读并发 N 倍）、DNS 16 路缓存分片 |
+| 异步对等 | Async* 全系列，API 与同步版一致 |
+| 可插拔 | 内置枚举 + StrategyProtocol callable + isinstance 分派注册表 |
+| 故障隔离 | 连续失败隔离 → 定时复活 → 健康检查，全自动 |
+| 零开销 | `thread_safe=False` 关闭所有锁，单线程无锁竞争 |
 
 ## 项目结构
 
 ```
-resource_pool/        ← 统一入口 + 框架层 (ABC / 编排器 / 锁基础设施)
-user_agent_pool/      ← UA 池 (850+ UA 自动加载 + 派系组装引擎 + 细粒度筛选)
-dns_resolver_pool/    ← DNS 池 (14 DNS + 16路缓存分片 + ContextVar)
-proxy_pool/           ← 代理池 (评分系统 + 9种格式解析 + 持久化)
-examples/             ← 5 个可运行示例
-tests/                ← 275 个测试 (覆盖率 94%+)
+resource_pool/        ← 统一入口 + 框架层 (ABC / 编排器 / 锁)
+user_agent_pool/      ← UA 池 (派系引擎 + 零件重组 + 细粒度筛选)
+dns_resolver_pool/    ← DNS 池 (14 服务器 + 16路缓存 + socket patch)
+proxy_pool/           ← 代理池 (评分系统 + 9 格式解析 + 持久化)
+examples/             ← 可运行示例
+tests/                ← 全量测试
 docs/
 ├── guides/
-│   ├── 从零到反反爬.md  ← 四层指南（开箱即用 → 初级定制 → 深度定制 → 底层源码）
-│   ├── cookbook.md    ← API 速查表 + 场景配方
-│   └── deep-dive.md   ← 架构 / 锁 / 策略 / 原理
+│   ├── 开箱即用.md    ← 🟢 入门：默认配置 5 种写法
+│   ├── 初级定制.md    ← 🔵 进阶：拧旋钮 5 种写法
+│   ├── 深度定制.md    ← 🟣 高级：自定义池 5 种写法
+│   └── 底层源码.md    ← ⚫ 深入：内部机制 5 种写法
 ├── PRODUCTION.md      ← 部署 / 监控 / 排障
-├── UPGRADE_PLAN.md    ← 升级路线图
-├── EXCEPTIONS.md      ← 异常体系 + 审查报告
 └── CHANGELOG.md       ← 完整版本历史
 ```
 
----
-
 ## 更新日志
+
+### v1.1.3 (2026-05-27)
+
+- 🐛 **`host` 字段解析**：荷花代理等 JSON `host`/`port` 格式已支持
+- 🛡️ **三探验活**：`_probe_proxy` 改为多目标探测，误杀率 70%→0
+
+### v1.1.2 (2026-05-27)
+
+- 🐛 **`create_resolver()` 修复**：返回 `_Resolver` 类实例替代裸函数，aiohttp `TCPConnector` 的 `.resolve()` 调用不再报 `AttributeError`
+
+### v1.1.1 (2026-05-27)
+
+- 🐛 **致命修复**：`ua_seeds.json` 加入打包清单，pip install 后 UA 池不再为空
+- 🐛 **代理解析修复**：短别名 `Proxy("ip:port:user:pass")` 复用 `_parse_proxy_str`，支持鉴权/协议前缀等多种格式
+- 🐛 **异步编排器增强**：`_fetch_from_pool_async` 添加 `isawaitable` 兜底，兼容返回 coroutine 的非 async 方法
+- 🐛 **故障隔离修复**：`mark_failed` 同步更新 `last_health`，避免被隔离代理被立即复活（同步+异步均已修复）
+- 🐛 **`__repr__` 修复**：DNS 池纯 callable 策略时不再抛 AttributeError（两步均有 None 守卫）
+- 🐛 **异常体系统一**：`InvalidAgentException` 纳入 `ResourceUnhealthyError` 继承体系
+- 🐛 **异步 UA 池修复**：`_build_headers` 委托同步实例，修复 8 个之前隐藏的异步 header 构建测试
+- 🔧 根目录 `headers_pool.jsonl` 不再参与搜索，仅使用包内 bundled 版本
+- 🧪 全量 286 测试通过
+
+### v1.1.0 (2026-05-27)
+
+- 🚀 **DNS Socket 透明补丁**：`DNSResolverPool.patch_socket()` monkey-patch `socket.getaddrinfo`，
+  `requests` / `urllib3` 的 DNS 解析自动走池内 14 台 DNS 服务器，无需修改任何请求代码
+- 🚀 **DNS 上下文管理器**：`with dns:` 进入自动 patch，退出自动 unpatch，一行代码搞定
+- 🚀 **异步 aiohttp DNS 集成**：`AsyncDNSResolverPool.create_resolver()` 返回 aiohttp `TCPConnector` 兼容的异步 resolver，
+  异步请求同样走 DNS 池
+- 🚀 **短别名 DNS 增强**：`resource_pool.DNS()` 支持 `patch_socket()` / `unpatch_socket()` + 上下文管理器
 
 ### v1.0.9 (2026-05-27)
 
