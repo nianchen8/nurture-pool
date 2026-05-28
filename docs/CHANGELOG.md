@@ -2,12 +2,22 @@
 
 ## v1.2.3 (2026-05-28)
 
-DNS 故障隔离测试修复 —— 系统 DNS 兜底干扰 + `_try_revive` 假复活修复。
+第三轮代码审查修复 —— PyPI 发布就绪。
 
 ### 🔧 修复
 - 🔧 **`test_invalid_server_raises` 修复**：池内所有 DNS 被 `remove_server` 禁用后，系统 DNS 兜底成功导致 `PoolExhaustedException` 未抛出 → 添加 `fallback_to_system=False` 隔离系统 DNS 干扰
 - 🔧 **`test_consecutive_fail_isolation` 修复**：第一次 resolve 失败后系统 DNS 兜底成功 → 结果被缓存 → 第二次 resolve 命中缓存 → 坏 DNS 未被第二次尝试 → `consecutive_fails` 仍为 1 → 未触发隔离 → 添加 `fallback_to_system=False` 确保每次都走池内失败计数
 - 🔧 **`ServerState.last_health` 假复活修复**（同步+异步）：`last_health` 初始化为 `0.0` → `_try_revive` 中 `now - 0.0 > revive_after` 恒为真 → 被 `remove_server` / `mark_failed` 禁用的服务器会立即复活。已修复为 `last_health = time.time()`
+- 🔒 **`auto_maintain` 竞态窗口缩小**：`load_from_url` 调用前重新获取锁读取最新 `alive`，避免锁释放后另一线程添加/移除代理导致 `alive` 判断偏旧
+- 🚀 **`resource_pool.import_proxy()` 新增 `auto_validate` 参数**：默认为 `True`，导入时自动探测代理连通性
+
+### 🧹 冗余清理
+- 🧹 **`user_agent_pool/pool.py`** 移除 `_load_unified_seeds()` 内冗余的 `import os as _os`（`os` 已在模块级导入），改用模块级 `os`
+- 🧹 **`dns_resolver_pool/servers.py`** `_DOMESTIC`/`_OVERSEAS` 上方增加同步注释，提醒与 `dns_servers.json` 保持一致性
+
+### 📝 发布就绪
+- 📝 **README** 安装命令更新为 `pip install resource-pool`（PyPI 发布后可用）
+- 📝 **LICENSE** 添加 MIT 许可证文件
 
 ## v1.2.2 (2026-05-28)
 
