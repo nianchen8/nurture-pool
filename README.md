@@ -1,4 +1,4 @@
-# Nurture Pool ![version](https://img.shields.io/badge/version-1.2.3-blue)
+# Nurture Pool ![version](https://img.shields.io/badge/version-1.2.4-blue)
 
 > 养成系资源池——UA 请求头、DNS、代理，越用越肥的三件套。
 
