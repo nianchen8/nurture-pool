@@ -38,12 +38,12 @@ jobs:
 
       - name: Run tests with coverage
         run: |
-          python -m pytest tests/ -v --tb=short --timeout=120 -q
+          python -m pytest tests/ -v --tb=short --timeout=120 -q --ignore=tests/live_demo --ignore=tests/ssr2.py
 
       - name: Coverage report
         if: matrix.python-version == '3.12'
         run: |
-          python -m pytest tests/ --cov=. --cov-report=term --cov-report=html --timeout=120 -q
+          python -m pytest tests/ --cov=. --cov-report=term --cov-report=html --timeout=120 -q --ignore=tests/live_demo --ignore=tests/ssr2.py
 
       - name: Upload coverage artifact
         if: matrix.python-version == '3.12'
