@@ -53,8 +53,8 @@ class ServerState:
         self.fail_count: int = 0
         self.success_count: int = 0
         self.consecutive_fails: int = 0
-        self.last_used: float = 0.0
-        self.last_health: float = 0.0
+        self.last_used: float = time.time()
+        self.last_health: float = time.time()
         # 每线程独立 Resolver 实例，确保多线程安全
         self._resolvers: threading.local = threading.local()
 

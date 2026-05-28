@@ -127,7 +127,7 @@ class TestDNSResolverPool:
 
     def test_invalid_server_raises(self):
         """无效 DNS 服务器应抛出异常"""
-        pool = DNSResolverPool(regions=("domestic",))
+        pool = DNSResolverPool(regions=("domestic",), fallback_to_system=False)
         # 全部移除后应抛出异常
         for s in pool.stats():
             pool.remove_server(s["ip"])
@@ -203,6 +203,7 @@ class TestFaultIsolation:
             regions=(),                # 不加载默认服务器
             max_consecutive_fails=2,
             revive_after=99999,
+            fallback_to_system=False,
         )
         # 添加一个必定失败的服务器
         pool.add_server({

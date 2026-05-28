@@ -62,8 +62,8 @@ class AsyncServerState:
         self.fail_count: int = 0
         self.success_count: int = 0
         self.consecutive_fails: int = 0
-        self.last_used: float = 0.0
-        self.last_health: float = 0.0
+        self.last_used: float = time.time()
+        self.last_health: float = time.time()
         # ContextVar 自动 per-task 隔离，子任务继承父任务值
         self._resolver_ctx: contextvars.ContextVar = contextvars.ContextVar(
             f"resolver_{self.ip}", default=None
